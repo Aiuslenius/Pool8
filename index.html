@@ -199,6 +199,9 @@ body.inmenu #hud{display:none}
 #mp-status{margin-top:14px;font-size:13px;line-height:1.5;color:#c3cbd3}
 #mp-status .code{display:inline-block;margin:4px 0;padding:6px 14px;border-radius:9px;background:rgba(232,192,112,.12);border:1px solid rgba(232,192,112,.5);color:#f6dca3;font:800 24px Inter;letter-spacing:.3em}
 .ball.theirs{outline:2px dashed #7aa2ff;outline-offset:2px}
+@media (pointer:fine){#power{pointer-events:none!important}#ptrack{cursor:default}}
+body.pulling #power{box-shadow:0 0 0 2px #e8c070}
+body.pulling{cursor:ns-resize}
 </style>
 </head>
 <body>
@@ -231,7 +234,7 @@ body.inmenu #hud{display:none}
     <button id="btn-menu">Meny<kbd>Esc</kbd></button>
   </div>
   <button id="shoot">SKJUT</button>
-  <div id="hint">Dra för att sikta · Scroll = zoom · ← → finjustera (Shift = extra fint) · ↑ ↓ kraft · Mellanslag = skjut</div>
+  <div id="hint">Vänsterklick + dra = sikta · Håll HÖGERKLICK och dra musen NEDÅT = kraft, släpp = skjut · Scroll = zoom · Mellanslag = skjut</div>
 </div>
 <div id="home">
   <div class="hcontent">
@@ -280,7 +283,7 @@ body.inmenu #hud{display:none}
       <h3>Styrning</h3>
       <ul>
         <li><b>Sikta:</b> dra med musen, eller <kbd>←</kbd> <kbd>→</kbd> för finjustering (<kbd>Shift</kbd> = extra fint)</li>
-        <li><b>Kraft:</b> reglaget till höger eller <kbd>↑</kbd> <kbd>↓</kbd></li>
+        <li><b>Kraft:</b> håll <b>högerklick</b> och dra musen nedåt (längre = hårdare), släpp för att skjuta. <kbd>↑</kbd> <kbd>↓</kbd> funkar också.</li>
         <li><b>Effekt:</b> klicka på den lilla bollen nere till vänster</li>
         <li><b>Skjut:</b> <kbd>Mellanslag</kbd> eller knappen Skjut</li>
         <li><b>Zoom:</b> mushjul · <kbd>T</kbd> ovanifrån · <kbd>G</kbd> siktlinje · <kbd>U</kbd> ångra · <kbd>Esc</kbd> meny</li>
@@ -1436,7 +1439,7 @@ const PHYS = (function () {
       for (const b of S.balls) if (b.sink) sinking = true;
       if (!P.anyMoving(S.balls) && !sinking) { S.still += dt; if (S.still > 0.4) finishShot(); } else S.still = 0;
     } else if (S.state === 'aim') {
-      placeCue(2.0);
+      placeCue(2.0 + (pull ? 3 + 26 * S.power : 0));
       cueYaw.visible = true;
     } else if (S.state === 'watch' && S.mp) {
       mpWatchPresence();
@@ -1503,9 +1506,22 @@ const PHYS = (function () {
     }
   }
 
-  const ptrs = new Map(); let drag = null, pinch0 = 0;
+  const ptrs = new Map(); let drag = null, pinch0 = 0, pull = null;
+  const pullPower = e => clamp(0.03 + (e.clientY - pull.y) / Math.max(180, innerHeight * 0.4), 0.03, 1);
+  function endPull(e, fire) {
+    if (!pull || (e && pull.id !== e.pointerId)) return;
+    const p = S.power, big = pull.moved, prev = pull.prev; pull = null; document.body.classList.remove('pulling');
+    if (fire && big && p > 0.07 && S.state === 'aim') startShot(); else { S.power = prev; updateHUD(); }
+  }
   canvas.addEventListener('pointerdown', e => {
     ensureAudio();
+    if (e.pointerType === 'mouse' && e.button === 2) {
+      if (S.state === 'aim' && !S.over && !S.menu && !pull && (!S.mp || mpMyTurn())) {
+        try { canvas.setPointerCapture(e.pointerId); } catch (_) { }
+        pull = { id: e.pointerId, y: e.clientY, moved: false, prev: S.power }; S.power = 0.03; document.body.classList.add('pulling'); updateHUD();
+      }
+      return;
+    }
     try { canvas.setPointerCapture(e.pointerId); } catch (_) { }
     ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (ptrs.size === 2) { const [a, b] = [...ptrs.values()]; pinch0 = Math.hypot(a.x - b.x, a.y - b.y); drag = null; return; }
@@ -1513,6 +1529,11 @@ const PHYS = (function () {
     if (S.state === 'place' || (S.top && S.state === 'aim')) pointAim(e);
   });
   canvas.addEventListener('pointermove', e => {
+    if (pull && pull.id === e.pointerId) {
+      if (S.state !== 'aim') { endPull(e, false); return; }
+      const p = pullPower(e); if (Math.abs(p - S.power) > 0.002) { pull.moved = pull.moved || p > 0.07; S.power = p; updateHUD(); }
+      return;
+    }
     if (!ptrs.has(e.pointerId)) { if (S.state === 'place' && e.pointerType === 'mouse') pointAim(e); return; }
     ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (ptrs.size === 2) {
@@ -1531,6 +1552,7 @@ const PHYS = (function () {
     S.pitch = clamp(S.pitch + dy * 0.004, 0.1, 1.45);
   });
   function endPtr(e) {
+    if (pull && pull.id === e.pointerId) { endPull(e, e.type === 'pointerup' && e.button === 2); return; }
     ptrs.delete(e.pointerId); pinch0 = 0;
     if (drag && drag.id === e.pointerId) {
       if (S.state === 'place' && e.pointerType === 'mouse' && e.type === 'pointerup') { pointAim(e); confirmPlace(); }
