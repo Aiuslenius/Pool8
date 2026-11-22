@@ -66,6 +66,133 @@
   auth().then(connect);
   window.claude = { use: async n => n === 'room' ? { join: async name => rooms.get(name) || mk(name) } : null };
 })();
+</script><script>/* Konto + molnsparning (endast när spelet körs från egen server). */
+(function () {
+  var EXC = function (k) { return k.indexOf('pool8.') !== 0 || k.indexOf('pool8.mt.') === 0 || k === 'pool8.acct' || k === 'pool8.q'; };
+  var LS = window.localStorage, rawSet, rawDel;
+  var A = null, timer = 0, pending = false, last = null, busy = false;
+  try { A = JSON.parse(LS.getItem('pool8.acct') || 'null'); } catch (_) { }
+  if (A && !(A.token && A.name)) A = null;
+  var $ = function (id) { return document.getElementById(id); };
+  var T = function (s, a) { return window.__tr ? window.__tr(s, a) : s; };
+
+  function localData() { var o = {}; try { for (var i = 0; i < LS.length; i++) { var k = LS.key(i); if (!EXC(k)) o[k] = LS.getItem(k); } } catch (_) { } return o; }
+  function num(v) { var n = parseInt(v, 10); return isNaN(n) ? null : n; }
+  function jparse(s) { try { return JSON.parse(s); } catch (_) { return null; } }
+  function mergeKey(k, a, b) {            // a = lokalt, b = moln
+    if (a === undefined) return b; if (b === undefined) return a; if (a === b) return a;
+    if (k === 'pool8.stats') {
+      var x = jparse(a) || {}, y = jparse(b) || {}, o = {};
+      Object.keys(x).concat(Object.keys(y)).forEach(function (f) { o[f] = f === 'since' ? Math.min(x[f] || Infinity, y[f] || Infinity) : Math.max(x[f] || 0, y[f] || 0); if (o[f] === Infinity) delete o[f]; });
+      return JSON.stringify(o);
+    }
+    if (k.indexOf('pool8.chal.') === 0) return String(Math.max(num(a) || 0, num(b) || 0));
+    if (k.indexOf('pool8.best.') === 0) { var p = num(a), q = num(b); if (p === null) return b; if (q === null) return a; return String(k === 'pool8.best.oneball' ? Math.max(p, q) : Math.min(p, q)); }
+    if (k.indexOf('pool8.ghost.') === 0) { var g = jparse(a), h = jparse(b); return g && h && g.n < h.n ? a : b; }
+    return b;                              // inställningar: molnet vinner
+  }
+  function merge(loc, cloud) { var o = {}, k; for (k in loc) o[k] = loc[k]; for (k in cloud) o[k] = mergeKey(k, loc[k], cloud[k]); return o; }
+
+  function post(path, body, cb, keep) {
+    var x = new XMLHttpRequest();
+    if (keep && window.fetch) { try { fetch(path, { method: 'POST', body: JSON.stringify(body), keepalive: true, headers: { 'Content-Type': 'application/json' } }); } catch (_) { } return; }
+    x.open('POST', path); x.setRequestHeader('Content-Type', 'application/json');
+    x.onload = function () { var j = null; try { j = JSON.parse(x.responseText); } catch (_) { } cb(x.status, j); };
+    x.onerror = function () { cb(0, null); };
+    x.send(JSON.stringify(body));
+  }
+  function setAcct(a) { A = a; try { if (a) LS.setItem('pool8.acct', JSON.stringify(a)); else LS.removeItem('pool8.acct'); } catch (_) { } ui(); }
+
+  function push(now) {
+    if (!A) return; pending = false; clearTimeout(timer);
+    sync('sparar');
+    post('/api/save', { token: A.token, data: localData() }, function (st, j) {
+      if (st === 200) { last = Date.now(); sync('ok'); }
+      else if (st === 401) { setAcct(null); msg('Sessionen har gått ut. Logga in igen.'); }
+      else sync('fel');
+    }, now === 'unload');
+  }
+  function sched() { if (!A) return; pending = true; clearTimeout(timer); timer = setTimeout(push, 4000); }
+  function patch() {
+    var P = Storage.prototype; rawSet = P.setItem; rawDel = P.removeItem;
+    P.setItem = function (k, v) { rawSet.call(this, k, v); if (this === LS && !EXC(String(k))) sched(); };
+    P.removeItem = function (k) { rawDel.call(this, k); if (this === LS && !EXC(String(k))) sched(); };
+  }
+  function flush() { if (pending && A) push('unload'); }
+
+  function applyCloud(cloud, reload) {      // slå ihop, skriv lokalt, ladda upp, ladda om vid ändring
+    var loc = localData(), m = merge(loc, cloud || {}), changed = false, k;
+    for (k in m) if (loc[k] !== m[k]) { changed = true; rawSet.call(LS, k, m[k]); }
+    try { if (LS.getItem('pool8.name') !== A.name) { changed = true; rawSet.call(LS, 'pool8.name', A.name); } } catch (_) { }
+    push();
+    if (changed && reload) setTimeout(function () { location.reload(); }, 400);
+    return changed;
+  }
+
+  function msg(s, a, bad) { var e = $('ac-msg'); if (!e) return; e.textContent = s ? T(s, a) : ''; e.style.color = bad ? '#ff8a8a' : '#8fe3a8'; e.dataset.k = s || ''; e.dataset.bad = bad ? '1' : ''; }
+  function sync(st) {
+    var e = $('ac-sync'); if (!e) return; e.dataset.st = st;
+    if (st === 'sparar') e.textContent = T('Sparar…');
+    else if (st === 'ok') { var d = new Date(last || Date.now()); e.textContent = T('Sparad {0}', [d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })]); }
+    else e.textContent = T('Kunde inte spara. Försöker igen vid nästa ändring.');
+  }
+  function ui() {
+    var b = $('h-acct'); if (!b) return;
+    b.style.display = 'flex'; b.textContent = A ? '👤 ' + A.name : '👤 ' + T('Logga in');
+    $('acct-out').style.display = A ? 'none' : ''; $('acct-in').style.display = A ? '' : 'none';
+    if (A) { $('ac-who').textContent = T('Inloggad som {0}', [A.name]); var st = $('ac-sync').dataset.st; if (st) sync(st); else $('ac-sync').textContent = T('Din data sparas automatiskt.'); }
+  }
+  function board() {
+    var x = new XMLHttpRequest(); x.open('GET', '/api/board');
+    x.onload = function () {
+      var j = jparse(x.responseText), w = $('ac-board'); if (!j || !w) return; w.innerHTML = '';
+      var sec = function (title, list, key) {
+        var h = document.createElement('p'); h.style.cssText = 'color:#e8c070;margin-top:6px'; h.textContent = T(title); w.appendChild(h);
+        if (!list.length) { var e = document.createElement('p'); e.textContent = T('Ingen än.'); e.style.color = '#8d99a5'; w.appendChild(e); return; }
+        list.forEach(function (r, i) { var p = document.createElement('p'); p.style.cssText = 'display:flex;justify-content:space-between;max-width:300px'; var a = document.createElement('span'), c = document.createElement('b'); a.textContent = (i + 1) + '. ' + r.name; c.textContent = (key === 'stars' ? '★ ' : '🏆 ') + r[key]; p.appendChild(a); p.appendChild(c); w.appendChild(p); });
+      };
+      sec('Mest stjärnor', j.stars, 'stars'); sec('Flest onlinevinster', j.won, 'won');
+    };
+    x.send();
+  }
+  function errMsg(st, j) {
+    var c = j && j.err;
+    var m = { bad_name: 'Namnet måste vara 3–16 tecken (bokstäver, siffror, _ eller -).', bad_pw: 'Lösenordet måste vara minst 6 tecken.', taken: 'Namnet är upptaget.', bad_login: 'Fel namn eller lösenord.', rate: 'För många försök. Vänta en stund.' }[c];
+    msg(m || 'Kunde inte nå servern.', null, true);
+  }
+  function login(reg) {
+    if (busy) return; var n = $('ac-name').value.trim(), p = $('ac-pw').value; busy = true; msg('Ansluter…');
+    post(reg ? '/api/register' : '/api/login', { name: n, pw: p }, function (st, j) {
+      busy = false;
+      if (st !== 200 || !j) return errMsg(st, j);
+      $('ac-pw').value = ''; setAcct({ token: j.token, name: j.name }); last = null; $('ac-sync').dataset.st = '';
+      msg(reg ? 'Kontot skapat!' : 'Inloggad!');
+      applyCloud(j.data, true); board();
+    });
+  }
+  function init() {
+    var b = $('h-acct'); if (!b) return;
+    var x = new XMLHttpRequest(); x.open('GET', '/api/ping');
+    x.onload = function () {
+      if (x.status !== 200) return;
+      patch(); ui(); board();
+      $('ac-login').onclick = function () { login(false); }; $('ac-reg').onclick = function () { login(true); };
+      $('ac-pw').onkeydown = function (e) { if (e.key === 'Enter') login(false); };
+      $('ac-now').onclick = function () { push(); };
+      $('ac-logout').onclick = function () { flush(); setAcct(null); msg('Utloggad.'); };
+      window.__acctOpen = function () { ui(); board(); };
+      window.__acctRefresh = function () { ui(); var e = $('ac-msg'); if (e && e.dataset.k) msg(e.dataset.k, null, !!e.dataset.bad); board(); };
+      document.addEventListener('visibilitychange', function () { if (document.hidden) flush(); });
+      window.addEventListener('pagehide', flush);
+      if (A) post('/api/me', { token: A.token }, function (st, j) {
+        if (st === 200 && j) { rawSet.call(LS, 'pool8.name', A.name); applyCloud(j.data, true); }
+        else if (st === 401) { setAcct(null); }
+      });
+    };
+    x.send();
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
+})();
 </script>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
@@ -205,6 +332,11 @@ body.inmenu #hud{display:none}
 .crow label{display:flex;align-items:center;gap:7px;font-size:12px;color:#aab4be}
 .crow input[type=color]{width:38px;height:28px;padding:0;border:1px solid rgba(255,255,255,.25);border-radius:6px;background:none;cursor:pointer}
 #hmain .hbtn small{display:block;margin-top:2px;font-weight:400;font-size:11.5px;letter-spacing:0;color:#8d99a5}
+#h-set{position:fixed;top:20px;right:22px;width:46px;height:46px;padding:0;margin:0;z-index:7;display:flex;align-items:center;justify-content:center;border-radius:50%;backdrop-filter:blur(6px);background:rgba(10,14,18,.7)}
+#h-acct{position:fixed;top:20px;right:80px;height:46px;width:auto;margin:0;padding:0 18px;z-index:7;align-items:center;gap:8px;border-radius:23px;backdrop-filter:blur(6px);background:rgba(10,14,18,.7);white-space:nowrap}
+#h-set:hover svg{transform:rotate(60deg)}#h-set svg{transition:transform .35s}
+#h-lang{position:fixed;right:22px;bottom:22px;width:auto;margin:0;padding:10px 16px;z-index:7;backdrop-filter:blur(6px);background:rgba(10,14,18,.7)}
+#h-lang small{display:inline;margin-left:8px;color:#e8c070}
 
 .tin{padding:10px 12px;border-radius:9px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.06);color:#fff;font:600 14px Inter,sans-serif;width:190px;outline:none;user-select:text;-webkit-user-select:text}
 .tin:focus{border-color:#e8c070}
@@ -288,7 +420,9 @@ body.narrow #chat{left:8px;bottom:88px}body.narrow #chatlog{left:8px;bottom:88px
         <button id="h-learn" class="hbtn">Träningsguide<small>Effekt, position och teknik</small></button>
         <button id="h-stats" class="hbtn">Statistik</button>
         <button id="h-how" class="hbtn">Så spelar du</button>
-        <button id="h-set" class="hbtn">Inställningar</button>
+        <button id="h-lang" class="hbtn" data-notr>🌐 Språk / Language<small id="h-langname" data-notr>Svenska</small></button>
+        <button id="h-acct" class="hbtn" style="display:none" data-notr></button>
+        <button id="h-set" class="hbtn" title="Inställningar" aria-label="Inställningar"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4z"/><path d="M19.4 13.5c.08-.5.1-1 .1-1.5s-.02-1-.1-1.5l2-1.55-2-3.46-2.35.95a7.5 7.5 0 0 0-2.6-1.5L14.1 3h-4.2l-.35 2.5a7.5 7.5 0 0 0-2.6 1.5l-2.35-.95-2 3.46 2 1.55c-.08.5-.1 1-.1 1.5s.02 1 .1 1.5l-2 1.55 2 3.46 2.35-.95c.8.65 1.65 1.15 2.6 1.5l.35 2.5h4.2l.35-2.5a7.5 7.5 0 0 0 2.6-1.5l2.35.95 2-3.46z"/></svg></button>
       </div>
       <div id="hwwarn"><b>Din webbläsare ritar 3D utan grafikkort.</b> Spelet kan laggla. Slå på <i>Använd grafikacceleration</i> i webbläsarens inställningar → System och starta om den. Kvaliteten har satts till Låg.</div>
     </div>
@@ -304,6 +438,35 @@ body.narrow #chat{left:8px;bottom:88px}body.narrow #chatlog{left:8px;bottom:88px
       <div class="row"><input id="mp-code" class="tin" maxlength="8" placeholder="Rumskod" autocomplete="off" style="width:130px;text-transform:uppercase"><button class="hbtn" id="mp-join">Gå med</button></div>
       <div id="mp-status"></div>
       <button class="hback hbtn" data-back>← Tillbaka</button>
+    </div>
+    <div id="sub-acct" class="hsub">
+      <h2>Konto</h2>
+      <div id="acct-out">
+        <p>Skapa ett konto för att spara dina rekord, stjärnor och inställningar i molnet och spela på flera enheter.</p>
+        <h3>Användarnamn</h3>
+        <input id="ac-name" class="tin" maxlength="16" autocomplete="username" spellcheck="false">
+        <h3>Lösenord</h3>
+        <input id="ac-pw" class="tin" type="password" maxlength="64" autocomplete="current-password">
+        <div class="row" style="margin-top:12px"><button class="hbtn" id="ac-login">Logga in</button><button class="hbtn" id="ac-reg">Skapa konto</button></div>
+      </div>
+      <div id="acct-in" style="display:none">
+        <p id="ac-who" data-notr></p>
+        <p id="ac-sync" data-notr style="color:#8d99a5"></p>
+        <div class="row" style="margin-top:10px"><button class="hbtn" id="ac-now">Spara nu</button><button class="hbtn" id="ac-logout">Logga ut</button></div>
+      </div>
+      <p id="ac-msg" data-notr style="min-height:1.6em;margin-top:8px"></p>
+      <h3>Topplista</h3>
+      <div id="ac-board" data-notr></div>
+      <button class="hback hbtn" data-back>← Tillbaka</button>
+    </div>
+    <div id="sub-lang" class="hsub" data-notr>
+      <h2>Språk / Language</h2>
+      <div class="seg" id="langlist" style="flex-wrap:wrap"></div>
+      <h3>More languages</h3>
+      <select id="lang-more" class="tin" style="width:100%"></select>
+      <p id="lang-status" style="min-height:2.4em"></p>
+      <p style="font-size:12px;color:#8d99a5">Svenska, English, Deutsch, Français och Español är handöversatta. Övriga språk översätts av webbläsaren (Chrome på dator) första gången du väljer dem och sparas sedan. / Other languages are translated by your browser (desktop Chrome) the first time and then saved.</p>
+      <button class="hback hbtn" data-back>← Tillbaka / Back</button>
     </div>
     <div id="sub-chal" class="hsub"><h2>Utmaningar</h2><p id="chal-total"></p><div id="challist"></div><button class="hback hbtn" data-back>← Tillbaka</button></div>
     <div id="sub-stats" class="hsub"><h2>Statistik</h2><div id="statlist"></div><div class="row" style="margin-top:14px"><button class="hbtn" id="stat-reset">Nollställ statistik</button></div><button class="hback hbtn" data-back>← Tillbaka</button></div>
@@ -379,6 +542,10 @@ body.narrow #chat{left:8px;bottom:88px}body.narrow #chatlog{left:8px;bottom:88px
 </div>
 <div id="modal"><div id="mcard" class="glass"><h2 id="mtitle"></h2><p id="mtext"></p><div id="mbtns"></div></div></div>
 <div id="loading">Laddar bordet…</div>
+<script>
+window.__TX = [["Lägsta bollen ({0}) skulle träffas först", "Lowest ball ({0}) must be hit first", "Zuerst muss die niedrigste Kugel ({0}) getroffen werden", "La plus petite boule ({0}) doit être touchée en premier", "La bola más baja ({0}) debe tocarse primero"], ["Du spelar {0} ({1})", "You play {0} ({1})", "Du spielst {0} ({1})", "Tu joues les {0} ({1})", "Juegas {0} ({1})"], ["Öppet bord", "Open table", "Offener Tisch", "Table ouverte", "Mesa abierta"], ["■ Stoppa repris", "■ Stop replay", "■ Wiederholung beenden", "■ Arrêter le replay", "■ Detener repetición"], ["⟲ Repris", "⟲ Replay", "⟲ Wiederholung", "⟲ Replay", "⟲ Repetición"], ["PLACERA HÄR", "PLACE HERE", "HIER PLATZIEREN", "PLACER ICI", "COLOCAR AQUÍ"], ["MOTSTÅNDARENS TUR", "OPPONENT'S TURN", "GEGNER IST DRAN", "TOUR DE L'ADVERSAIRE", "TURNO DEL RIVAL"], ["SKJUT", "SHOOT", "SCHIESSEN", "TIRER", "DISPARAR"], ["Sänk så många bollar du kan i rad – första missen avslutar.", "Pot as many balls in a row as you can – the first miss ends it.", "Versenke so viele Kugeln hintereinander wie möglich – der erste Fehlschuss beendet es.", "Empoche le plus de boules d'affilée – le premier raté y met fin.", "Mete tantas bolas seguidas como puedas: el primer fallo termina."], ["Sänk bollen! Du har tre försök per runda.", "Pot the ball! You get three attempts per round.", "Versenke die Kugel! Du hast drei Versuche pro Runde.", "Empoche la boule ! Tu as trois essais par manche.", "¡Mete la bola! Tienes tres intentos por ronda."], ["Bryt! Träffa alltid lägsta bollen först – nian vinner.", "Break! Always hit the lowest ball first – the nine wins.", "Anstoß! Triff immer zuerst die niedrigste Kugel – die Neun gewinnt.", "Casse ! Touche toujours la plus petite boule en premier – la neuf gagne.", "¡Rompe! Toca siempre primero la bola más baja: la nueve gana."], ["Straight pool till {0} poäng. Bryt racket!", "Straight pool to {0} points. Break the rack!", "Straight Pool bis {0} Punkte. Brich das Rack auf!", "Straight pool jusqu'à {0} points. Casse le triangle !", "Straight pool hasta {0} puntos. ¡Rompe el triángulo!"], ["Bryt racket! Placera vita bollen i det markerade området och tryck PLACERA HÄR.", "Break the rack! Place the cue ball in the marked area and press PLACE HERE.", "Brich das Rack auf! Platziere die weiße Kugel im markierten Bereich und drücke HIER PLATZIEREN.", "Casse le triangle ! Place la blanche dans la zone marquée et appuie sur PLACER ICI.", "¡Rompe el triángulo! Coloca la blanca en la zona marcada y pulsa COLOCAR AQUÍ."], ["Skottet ångrades.", "Shot undone.", "Stoß rückgängig gemacht.", "Coup annulé.", "Tiro deshecho."], ["Åttan i hål!", "Eight ball potted!", "Die Acht ist versenkt!", "La huit est empochée !", "¡Bola 8 metida!"], ["Bordet klarat! 🎱", "Table cleared! 🎱", "Tisch abgeräumt! 🎱", "Table nettoyée ! 🎱", "¡Mesa despejada! 🎱"], ["Du klarade bordet på {0} skott ({1} foul). Träffprocent: {2}%.", "You cleared the table in {0} shots ({1} fouls). Pot rate: {2}%.", "Du hast den Tisch in {0} Stößen abgeräumt ({1} Fouls). Trefferquote: {2}%.", "Tu as nettoyé la table en {0} coups ({1} fautes). Réussite : {2} %.", "Despejaste la mesa en {0} tiros ({1} faltas). Acierto: {2}%."], ["Ångra sista skottet", "Undo last shot", "Letzten Stoß rückgängig", "Annuler le dernier coup", "Deshacer último tiro"], ["Ny rack", "New rack", "Neues Rack", "Nouveau triangle", "Nuevo triángulo"], ["Åttan i hål för tidigt", "Eight ball potted too early", "Acht zu früh versenkt", "Huit empochée trop tôt", "Bola 8 metida demasiado pronto"], ["Åttan sänktes innan din grupp var klar.", "The eight ball went in before your group was cleared.", "Die Acht fiel, bevor deine Gruppe abgeräumt war.", "La huit est tombée avant la fin de ton groupe.", "La bola 8 entró antes de despejar tu grupo."], ["Ångra skottet", "Undo shot", "Stoß rückgängig", "Annuler le coup", "Deshacer tiro"], ["Foul: {0}. Boll i hand!", "Foul: {0}. Ball in hand!", "Foul: {0}. Weiße in der Hand!", "Faute : {0}. Bille en main !", "Falta: {0}. ¡Bola en mano!"], ["Bra! Fortsätt skjuta.", "Nice! Keep shooting.", "Gut! Schieß weiter.", "Bien ! Continue à tirer.", "¡Bien! Sigue tirando."], ["{0} bollar i hål – bra!", "{0} balls potted – nice!", "{0} Kugeln versenkt – super!", "{0} boules empochées – bravo !", "¡{0} bolas metidas, genial!"], ["Ingen boll i hål.", "No ball potted.", "Keine Kugel versenkt.", "Aucune boule empochée.", "Ninguna bola metida."], ["Du spelar {0} bollar.", "You play {0} balls.", "Du spielst {0} Kugeln.", "Tu joues les boules {0}.", "Juegas con las bolas {0}."], ["Ogiltig placering – ligger för nära en annan boll.", "Invalid placement – too close to another ball.", "Ungültige Position – zu nah an einer anderen Kugel.", "Placement invalide – trop près d'une autre boule.", "Posición no válida: demasiado cerca de otra bola."], [" · Spöke: {0} skott", " · Ghost: {0} shots", " · Geist: {0} Stöße", " · Fantôme : {0} coups", " · Fantasma: {0} tiros"], [" · Spöke: {0} kvar", " · Ghost: {0} left", " · Geist: {0} übrig", " · Fantôme : {0} restantes", " · Fantasma: quedan {0}"], ["Rensa bordet · {0} kvar", "Clear the table · {0} left", "Tisch abräumen · {0} übrig", "Nettoyer la table · {0} restantes", "Despejar la mesa · quedan {0}"], ["{0} kvar", "{0} left", "{0} übrig", "{0} restantes", "quedan {0}"], ["Runda {0}/10 · Poäng {1} · Försök {2}/3", "Round {0}/10 · Score {1} · Attempt {2}/3", "Runde {0}/10 · Punkte {1} · Versuch {2}/3", "Manche {0}/10 · Score {1} · Essai {2}/3", "Ronda {0}/10 · Puntos {1} · Intento {2}/3"], ["9-ball · lägsta: {0} · {1} kvar", "9-ball · lowest: {0} · {1} left", "9-Ball · niedrigste: {0} · {1} übrig", "9-ball · plus petite : {0} · {1} restantes", "9-ball · la más baja: {0} · quedan {1}"], ["Straight pool · {0} / {1} poäng · {2} kvar", "Straight pool · {0} / {1} points · {2} left", "Straight Pool · {0} / {1} Punkte · {2} übrig", "Straight pool · {0} / {1} points · {2} restantes", "Straight pool · {0} / {1} puntos · quedan {2}"], ["Serie: {0} i rad · {1} kvar", "Streak: {0} in a row · {1} left", "Serie: {0} in Folge · {1} übrig", "Série : {0} d'affilée · {1} restantes", "Racha: {0} seguidas · quedan {1}"], ["Utmaning: {0}", "Challenge: {0}", "Challenge: {0}", "Défi : {0}", "Reto: {0}"], ["Meny", "Menu", "Menü", "Menu", "Menú"], ["Spela igen", "Play again", "Nochmal spielen", "Rejouer", "Jugar de nuevo"], ["Klarat!", "Cleared!", "Geschafft!", "Réussi !", "¡Superado!"], ["Inte riktigt…", "Not quite…", "Nicht ganz…", "Pas tout à fait…", "Casi…"], ["3 stjärnor: {0}+, 2: {1}+, 1: {2}+.", "3 stars: {0}+, 2: {1}+, 1: {2}+.", "3 Sterne: {0}+, 2: {1}+, 1: {2}+.", "3 étoiles : {0}+, 2 : {1}+, 1 : {2}+.", "3 estrellas: {0}+, 2: {1}+, 1: {2}+."], ["3 stjärnor: ≤{0}, 2: ≤{1}, 1: ≤{2}.", "3 stars: ≤{0}, 2: ≤{1}, 1: ≤{2}.", "3 Sterne: ≤{0}, 2: ≤{1}, 1: ≤{2}.", "3 étoiles : ≤{0}, 2 : ≤{1}, 1 : ≤{2}.", "3 estrellas: ≤{0}, 2: ≤{1}, 1: ≤{2}."], ["Utmaningar", "Challenges", "Challenges", "Défis", "Retos"], ["Försök igen", "Try again", "Nochmal versuchen", "Réessayer", "Reintentar"], ["Nästa utmaning", "Next challenge", "Nächste Challenge", "Défi suivant", "Siguiente reto"], ["Bra! Boll i hål.", "Nice! Ball potted.", "Super! Kugel versenkt.", "Bien ! Boule empochée.", "¡Bien! Bola metida."], ["Inga försök kvar – nästa runda.", "No attempts left – next round.", "Keine Versuche mehr – nächste Runde.", "Plus d'essais – manche suivante.", "Sin intentos: siguiente ronda."], ["Vita bollen i hål.", "Cue ball potted.", "Weiße versenkt.", "Blanche empochée.", "Blanca metida."], ["Miss. Försök igen.", "Miss. Try again.", "Verfehlt. Versuch es nochmal.", "Raté. Réessaie.", "Fallo. Inténtalo otra vez."], ["Klart! {0} / 10", "Done! {0} / 10", "Geschafft! {0} / 10", "Terminé ! {0} / 10", "¡Hecho! {0} / 10"], ["Nytt rekord!", "New record!", "Neuer Rekord!", "Nouveau record !", "¡Nuevo récord!"], ["Ditt rekord: {0} / 10.", "Your record: {0} / 10.", "Dein Rekord: {0} / 10.", "Ton record : {0} / 10.", "Tu récord: {0} / 10."], ["Träffprocent: {0}%.", "Pot rate: {0}%.", "Trefferquote: {0}%.", "Réussite : {0} %.", "Acierto: {0}%."], ["{0} i rad – fortsätt!", "{0} in a row – keep going!", "{0} in Folge – weiter so!", "{0} d'affilée – continue !", "¡{0} seguidas, sigue!"], ["Niaren i hål på {0} skott!", "Nine ball potted in {0} shots!", "Neun in {0} Stößen versenkt!", "Neuf empochée en {0} coups !", "¡Nueve metida en {0} tiros!"], ["Ditt rekord: {0} skott.", "Your record: {0} shots.", "Dein Rekord: {0} Stöße.", "Ton record : {0} coups.", "Tu récord: {0} tiros."], ["{0} foul.", "{0} fouls.", "{0} Fouls.", "{0} fautes.", "{0} faltas."], ["Utan foul.", "No fouls.", "Keine Fouls.", "Aucune faute.", "Sin faltas."], ["Nian läggs tillbaka.", "The nine is spotted again.", "Die Neun wird wieder aufgelegt.", "La neuf est replacée.", "La nueve vuelve a la mesa."], ["{0} poäng på {1} skott!", "{0} points in {1} shots!", "{0} Punkte in {1} Stößen!", "{0} points en {1} coups !", "¡{0} puntos en {1} tiros!"], ["Nytt rack!", "New rack!", "Neues Rack!", "Nouveau triangle !", "¡Nuevo triángulo!"], ["Foul: {0}. −1 poäng, boll i hand.", "Foul: {0}. −1 point, ball in hand.", "Foul: {0}. −1 Punkt, Weiße in der Hand.", "Faute : {0}. −1 point, bille en main.", "Falta: {0}. −1 punto, bola en mano."], ["+{0} poäng", "+{0} points", "+{0} Punkte", "+{0} points", "+{0} puntos"], ["Klarat på {0} skott", "Cleared in {0} shots", "In {0} Stößen geschafft", "Réussi en {0} coups", "Superado en {0} tiros"], ["{0} foul (+1 skott var).", "{0} fouls (+1 shot each).", "{0} Fouls (je +1 Stoß).", "{0} fautes (+1 coup chacune).", "{0} faltas (+1 tiro cada una)."], ["Vita bollen i hål – boll i hand!", "Cue ball potted – ball in hand!", "Weiße versenkt – Weiße in der Hand!", "Blanche empochée – bille en main !", "Blanca metida: ¡bola en mano!"], ["(+1 skott)", "(+1 shot)", "(+1 Stoß)", "(+1 coup)", "(+1 tiro)"], ["Rekord {0}/10", "Record {0}/10", "Rekord {0}/10", "Record {0}/10", "Récord {0}/10"], ["Rekord {0} skott", "Record {0} shots", "Rekord {0} Stöße", "Record {0} coups", "Récord {0} tiros"], ["Övningsuppställningar", "Practice setups", "Übungsaufbauten", "Exercices", "Ejercicios"], ["Rekord {0}", "Record {0}", "Rekord {0}", "Record {0}", "Récord {0}"], ["Stjärnor: {0} / {1}. Klara en utmaning med minst en stjärna för att låsa upp nästa.", "Stars: {0} / {1}. Clear a challenge with at least one star to unlock the next.", "Sterne: {0} / {1}. Schaffe eine Challenge mit mindestens einem Stern, um die nächste freizuschalten.", "Étoiles : {0} / {1}. Réussis un défi avec au moins une étoile pour débloquer le suivant.", "Estrellas: {0} / {1}. Supera un reto con al menos una estrella para desbloquear el siguiente."], ["Följ: vita rullar framåt efter träffen", "Follow: the cue ball keeps rolling forward after contact", "Nachlauf: die Weiße rollt nach dem Treffer weiter", "Coulé : la blanche continue d'avancer après le contact", "Seguir: la blanca sigue rodando hacia delante tras el golpe"], ["Back: vita drar tillbaka efter träffen", "Draw: the cue ball pulls back after contact", "Rückläufer: die Weiße zieht nach dem Treffer zurück", "Rétro : la blanche revient en arrière après le contact", "Retroceso: la blanca vuelve atrás tras el golpe"], ["Högereffekt: styr åt höger vid kudden", "Right spin: steers right off the cushion", "Rechtsdrall: lenkt an der Bande nach rechts", "Effet à droite : dévie vers la droite à la bande", "Efecto derecho: gira a la derecha en la banda"], ["Vänstereffekt: styr åt vänster vid kudden", "Left spin: steers left off the cushion", "Linksdrall: lenkt an der Bande nach links", "Effet à gauche : dévie vers la gauche à la bande", "Efecto izquierdo: gira a la izquierda en la banda"], ["Mitten: ren träff", "Center: clean hit", "Mitte: sauberer Treffer", "Centre : coup net", "Centro: golpe limpio"], ["Nollställ statistik", "Reset statistics", "Statistik zurücksetzen", "Réinitialiser les statistiques", "Restablecer estadísticas"], ["Skott totalt", "Total shots", "Stöße gesamt", "Coups au total", "Tiros totales"], ["Bollar sänkta", "Balls potted", "Versenkte Kugeln", "Boules empochées", "Bolas metidas"], ["Träffprocent", "Pot rate", "Trefferquote", "Taux de réussite", "Acierto"], ["Foul", "Fouls", "Fouls", "Fautes", "Faltas"], ["Längsta serie", "Longest streak", "Längste Serie", "Plus longue série", "Racha más larga"], ["Klarade banor och bord", "Levels and tables cleared", "Abgeräumte Level und Tische", "Niveaux et tables réussis", "Niveles y mesas superados"], ["Online: spelade matcher", "Online: matches played", "Online: gespielte Partien", "En ligne : parties jouées", "En línea: partidas jugadas"], ["Online: vunna", "Online: won", "Online: gewonnen", "En ligne : gagnées", "En línea: ganadas"], ["Utmaningsstjärnor", "Challenge stars", "Challenge-Sterne", "Étoiles de défis", "Estrellas de retos"], ["Rensa bordet", "Clear the table", "Tisch abräumen", "Nettoyer la table", "Despejar la mesa"], ["skott", "shots", "Stöße", "coups", "tiros"], ["Träna på en boll", "Practice one ball", "Eine Kugel üben", "S'entraîner sur une boule", "Practicar con una bola"], ["Personliga rekord", "Personal records", "Persönliche Rekorde", "Records personnels", "Récords personales"], ["Rumskod:", "Room code:", "Raumcode:", "Code de la salle :", "Código de sala:"], ["Motspelare", "Opponent", "Gegner", "Adversaire", "Rival"], ["Du", "You", "Du", "Toi", "Tú"], ["Väntar på motspelare…", "Waiting for an opponent…", "Warte auf einen Gegner…", "En attente d'un adversaire…", "Esperando a un rival…"], ["{0}s tur", "{0}'s turn", "{0} ist dran", "Tour de {0}", "Turno de {0}"], ["DIN TUR", "YOUR TURN", "DU BIST DRAN", "À TOI DE JOUER", "TU TURNO"], ["{0}S TUR", "{0}'S TURN", "{0} IST DRAN", "TOUR DE {0}", "TURNO DE {0}"], [" · motspelaren frånkopplad", " · opponent disconnected", " · Gegner getrennt", " · adversaire déconnecté", " · rival desconectado"], [" · du: {0}", " · you: {0}", " · du: {0}", " · toi : {0}", " · tú: {0}"], [" · öppet bord", " · open table", " · offener Tisch", " · table ouverte", " · mesa abierta"], ["Ingen boll i hål. Nu skjuter {0}.", "No ball potted. {0} shoots now.", "Keine Kugel versenkt. Jetzt schießt {0}.", "Aucune boule empochée. {0} joue maintenant.", "Ninguna bola metida. Ahora tira {0}."], ["{0} missade. Din tur!", "{0} missed. Your turn!", "{0} hat verfehlt. Du bist dran!", "{0} a raté. À toi !", "{0} falló. ¡Tu turno!"], ["Foul: {0}. {1} får boll i hand.", "Foul: {0}. {1} gets ball in hand.", "Foul: {0}. {1} bekommt die Weiße in die Hand.", "Faute : {0}. {1} a la bille en main.", "Falta: {0}. {1} tiene bola en mano."], ["{0} gjorde foul: {1}. Du får boll i hand!", "{0} fouled: {1}. You get ball in hand!", "{0} hat ein Foul gemacht: {1}. Du bekommst die Weiße in die Hand!", "{0} a fait faute : {1}. Tu as la bille en main !", "{0} cometió falta: {1}. ¡Tienes bola en mano!"], ["Tiden tog slut! {0} får boll i hand.", "Time's up! {0} gets ball in hand.", "Die Zeit ist um! {0} bekommt die Weiße in die Hand.", "Temps écoulé ! {0} a la bille en main.", "¡Se acabó el tiempo! {0} tiene bola en mano."], ["{0} hann inte skjuta. Du får boll i hand!", "{0} ran out of time. You get ball in hand!", "{0} war zu langsam. Du bekommst die Weiße in die Hand!", "{0} n'a pas joué à temps. Tu as la bille en main !", "{0} se quedó sin tiempo. ¡Tienes bola en mano!"], ["{0} vann", "{0} won", "{0} hat gewonnen", "{0} a gagné", "{0} ganó"], ["Du vann! 🎱", "You won! 🎱", "Du hast gewonnen! 🎱", "Tu as gagné ! 🎱", "¡Ganaste! 🎱"], ["Du sänkte åttan efter {0} skott.", "You potted the eight ball after {0} shots.", "Du hast die Acht nach {0} Stößen versenkt.", "Tu as empoché la huit après {0} coups.", "Metiste la bola 8 tras {0} tiros."], ["{0} sänkte åttan efter {1} skott.", "{0} potted the eight ball after {1} shots.", "{0} hat die Acht nach {1} Stößen versenkt.", "{0} a empoché la huit après {1} coups.", "{0} metió la bola 8 tras {1} tiros."], ["Du sänkte åttan för tidigt{0}.", "You potted the eight ball too early{0}.", "Du hast die Acht zu früh versenkt{0}.", "Tu as empoché la huit trop tôt{0}.", "Metiste la bola 8 demasiado pronto{0}."], ["{0} sänkte åttan för tidigt{1}.", "{0} potted the eight ball too early{1}.", "{0} hat die Acht zu früh versenkt{1}.", "{0} a empoché la huit trop tôt{1}.", "{0} metió la bola 8 demasiado pronto{1}."], ["Ställning: {0}.", "Score: {0}.", "Stand: {0}.", "Score : {0}.", "Marcador: {0}."], ["Lämna rummet", "Leave room", "Raum verlassen", "Quitter la salle", "Salir de la sala"], ["Du bryter! Placera vita bollen bakom linjen och tryck PLACERA HÄR.", "You break! Place the cue ball behind the line and press PLACE HERE.", "Du stößt an! Platziere die Weiße hinter der Linie und drücke HIER PLATZIEREN.", "C'est toi qui casses ! Place la blanche derrière la ligne et appuie sur PLACER ICI.", "¡Rompes tú! Coloca la blanca detrás de la línea y pulsa COLOCAR AQUÍ."], ["{0} bryter.", "{0} breaks.", "{0} stößt an.", "{0} casse.", "{0} rompe."], ["din tur", "your turn", "du bist dran", "ton tour", "tu turno"], ["Väntar på att din vän går med…", "Waiting for your friend to join…", "Warte darauf, dass dein Freund beitritt…", "En attente de ton ami…", "Esperando a que se una tu amigo…"], ["Motspelaren lämnade rummet. Väntar på att hen kommer tillbaka…", "Your opponent left the room. Waiting for them to come back…", "Dein Gegner hat den Raum verlassen. Warte auf die Rückkehr…", "Ton adversaire a quitté la salle. On attend son retour…", "Tu rival salió de la sala. Esperando a que vuelva…"], ["Skriv in en rumskod.", "Enter a room code.", "Gib einen Raumcode ein.", "Saisis un code de salle.", "Escribe un código de sala."], ["Ansluter…", "Connecting…", "Verbinde…", "Connexion…", "Conectando…"], ["Kunde inte ansluta till servern. Kontrollera att den körs.", "Online mode isn't available here. Open the game through its claude.ai link, signed in, and ask the owner to share the page with you.", "Der Online-Modus ist hier nicht verfügbar. Öffne das Spiel über seinen claude.ai-Link, angemeldet, und bitte den Besitzer, die Seite mit dir zu teilen.", "Le mode en ligne n'est pas disponible ici. Ouvre le jeu via son lien claude.ai, connecté, et demande au propriétaire de partager la page avec toi.", "El modo en línea no está disponible aquí. Abre el juego desde su enlace de claude.ai, con sesión iniciada, y pide al propietario que comparta la página contigo."], ["Kunde inte gå med i rummet ({0}).", "Couldn't join the room ({0}).", "Beitritt zum Raum fehlgeschlagen ({0}).", "Impossible de rejoindre la salle ({0}).", "No se pudo entrar en la sala ({0})."], ["Väntar på att din vän går med. Be hen öppna spelet → Spela online → Gå med och skriva in koden.", "Waiting for your friend. Ask them to open the game → Play online → Join and enter the code.", "Warte auf deinen Freund. Bitte ihn, das Spiel zu öffnen → Online spielen → Beitreten und den Code einzugeben.", "En attente de ton ami. Demande-lui d'ouvrir le jeu → Jouer en ligne → Rejoindre et de saisir le code.", "Esperando a tu amigo. Pídele que abra el juego → Jugar en línea → Unirse e introduzca el código."], ["Ansluten till rum {0}. Väntar på spelet…", "Connected to room {0}. Waiting for the game…", "Mit Raum {0} verbunden. Warte auf das Spiel…", "Connecté à la salle {0}. En attente de la partie…", "Conectado a la sala {0}. Esperando la partida…"], ["8-Ball Pool – Övningsläge (3D)", "8-Ball Pool – Practice mode (3D)", "8-Ball Pool – Übungsmodus (3D)", "8-Ball Pool – Mode entraînement (3D)", "8-Ball Pool – Modo práctica (3D)"], ["Den här webbläsaren stöder inte inbyggd översättning. Använd Chrome (dator) för fler språk.", "This browser doesn't support built-in translation. Use Chrome on desktop for more languages.", "Dieser Browser unterstützt keine integrierte Übersetzung. Nutze Chrome am Computer für weitere Sprachen.", "Ce navigateur ne prend pas en charge la traduction intégrée. Utilise Chrome sur ordinateur pour plus de langues.", "Este navegador no admite traducción integrada. Usa Chrome en el ordenador para más idiomas."], ["Webbläsaren kan inte översätta till det språket.", "The browser can't translate to that language.", "Der Browser kann nicht in diese Sprache übersetzen.", "Le navigateur ne peut pas traduire vers cette langue.", "El navegador no puede traducir a ese idioma."], ["Förbereder översättning…", "Preparing translation…", "Übersetzung wird vorbereitet…", "Préparation de la traduction…", "Preparando la traducción…"], ["Laddar ner språkpaket… {0}%", "Downloading language pack… {0}%", "Sprachpaket wird geladen… {0}%", "Téléchargement du pack de langue… {0} %", "Descargando paquete de idioma… {0}%"], ["Översätter… {0}%", "Translating… {0}%", "Übersetze… {0}%", "Traduction… {0} %", "Traduciendo… {0}%"], ["Klart! Texter som saknar översättning visas på engelska.", "Done! Texts without a translation are shown in English.", "Fertig! Texte ohne Übersetzung werden auf Englisch angezeigt.", "Terminé ! Les textes sans traduction sont affichés en anglais.", "¡Listo! Los textos sin traducción se muestran en inglés."], ["Översättningen misslyckades.", "Translation failed.", "Übersetzung fehlgeschlagen.", "La traduction a échoué.", "La traducción falló."], ["Ljud", "Sound", "Ton", "Son", "Sonido"], ["Musik", "Music", "Musik", "Musique", "Música"], ["Filmisk kamera", "Cinematic camera", "Filmische Kamera", "Caméra cinématique", "Cámara cinematográfica"], ["Siktlinje", "Aim line", "Ziellinie", "Ligne de visée", "Línea de puntería"], ["Vänta tills bollarna står still.", "Wait until the balls stop.", "Warte, bis die Kugeln stillstehen.", "Attends que les boules s'arrêtent.", "Espera a que las bolas se detengan."], ["FORTSÄTT", "CONTINUE", "WEITER", "CONTINUER", "CONTINUAR"], ["Tryck igen för att bekräfta", "Press again to confirm", "Zum Bestätigen nochmal drücken", "Appuie à nouveau pour confirmer", "Pulsa otra vez para confirmar"], ["1 boll i hål – fortsätt!", "1 ball potted – keep going!", "1 Kugel versenkt – weiter so!", "1 boule empochée – continue !", "1 bola metida: ¡sigue!"], ["{0} bollar i hål – fortsätt!", "{0} balls potted – keep going!", "{0} Kugeln versenkt – weiter so!", "{0} boules empochées – continue !", "{0} bolas metidas: ¡sigue!"], ["1 boll i hål – {1} kvar.", "1 ball potted – {1} left.", "1 Kugel versenkt – {1} übrig.", "1 boule empochée – {1} restantes.", "1 bola metida: quedan {1}."], ["{0} bollar i hål – {1} kvar.", "{0} balls potted – {1} left.", "{0} Kugeln versenkt – {1} übrig.", "{0} boules empochées – {1} restantes.", "{0} bolas metidas: quedan {1}."], ["Bra! Du sänkte 1 boll. Fortsätt!", "Nice! You potted 1 ball. Keep going!", "Gut! Du hast 1 Kugel versenkt. Weiter!", "Bien ! Tu as empoché 1 boule. Continue !", "¡Bien! Metiste 1 bola. ¡Sigue!"], ["Bra! Du sänkte {0} bollar. Fortsätt!", "Nice! You potted {0} balls. Keep going!", "Gut! Du hast {0} Kugeln versenkt. Weiter!", "Bien ! Tu as empoché {0} boules. Continue !", "¡Bien! Metiste {0} bolas. ¡Sigue!"], ["{1} sänkte 1 boll och fortsätter.", "{1} potted 1 ball and keeps going.", "{1} hat 1 Kugel versenkt und macht weiter.", "{1} a empoché 1 boule et continue.", "{1} metió 1 bola y sigue."], ["{1} sänkte {0} bollar och fortsätter.", "{1} potted {0} balls and keeps going.", "{1} hat {0} Kugeln versenkt und macht weiter.", "{1} a empoché {0} boules et continue.", "{1} metió {0} bolas y sigue."], ["på", "on", "an", "activé", "activado"], ["av", "off", "aus", "désactivé", "desactivado"], ["hela", "solid", "volle", "pleines", "lisas"], ["halva", "striped", "halbe", "rayées", "rayadas"], ["SPELA", "PLAY", "SPIELEN", "JOUER", "JUGAR"], ["Skott", "Shots", "Stöße", "Coups", "Tiros"], ["Ingen boll träffades", "No ball was hit", "Keine Kugel getroffen", "Aucune boule touchée", "No se tocó ninguna bola"], ["Vita bollen i hål", "Cue ball potted", "Weiße versenkt", "Blanche empochée", "Blanca metida"], ["Åttan skulle träffas först", "The eight ball had to be hit first", "Zuerst hätte die Acht getroffen werden müssen", "La huit devait être touchée en premier", "Había que tocar primero la bola 8"], ["Fel boll träffades först", "Wrong ball hit first", "Falsche Kugel zuerst getroffen", "Mauvaise boule touchée en premier", "Se tocó primero la bola equivocada"], ["Åttan träffades först", "The eight ball was hit first", "Die Acht wurde zuerst getroffen", "La huit a été touchée en premier", "Se tocó primero la bola 8"], ["Ingen boll nådde kudden", "No ball reached a cushion", "Keine Kugel erreichte die Bande", "Aucune boule n'a touché la bande", "Ninguna bola llegó a la banda"], ["Fri övning", "Free practice", "Freies Training", "Entraînement libre", "Práctica libre"], ["8-ball med riktiga regler, utan motståndare.", "8-ball with real rules, no opponent.", "8-Ball mit echten Regeln, ohne Gegner.", "8-ball avec les vraies règles, sans adversaire.", "8-ball con reglas reales, sin rival."], ["Sänk alla 15 bollar på så få skott som möjligt. Vit boll i hål ger +1 skott.", "Pot all 15 balls in as few shots as possible. Potting the cue ball adds +1 shot.", "Versenke alle 15 Kugeln mit möglichst wenigen Stößen. Eine versenkte Weiße gibt +1 Stoß.", "Empoche les 15 boules en un minimum de coups. Empocher la blanche ajoute +1 coup.", "Mete las 15 bolas con los menos tiros posibles. Meter la blanca suma +1 tiro."], ["10 rundor med en boll åt gången. Tre försök per boll.", "10 rounds with one ball at a time. Three attempts per ball.", "10 Runden mit je einer Kugel. Drei Versuche pro Kugel.", "10 manches avec une boule à la fois. Trois essais par boule.", "10 rondas con una bola cada vez. Tres intentos por bola."], ["9-ball", "9-ball", "9-ball", "9-ball", "9-ball"], ["Träffa alltid lägsta bollen först och sänk nian. Så få skott som möjligt.", "Always hit the lowest ball first and pot the nine. As few shots as possible.", "Triff immer zuerst die niedrigste Kugel und versenke die Neun. Mit möglichst wenigen Stößen.", "Touche toujours la plus petite boule en premier et empoche la neuf. En un minimum de coups.", "Toca siempre primero la bola más baja y mete la nueve. Con los menos tiros posibles."], ["Straight pool", "Straight pool", "Straight pool", "Straight pool", "Straight pool"], ["Valfri boll i valfri ficka: +1 per boll, −1 för foul. Spela till {0} poäng, racket fylls på automatiskt.", "Any ball in any pocket: +1 per ball, −1 per foul. Play to {0} points; the rack refills automatically.", "Beliebige Kugel in beliebige Tasche: +1 pro Kugel, −1 pro Foul. Spiele bis {0} Punkte; das Rack wird automatisch aufgefüllt.", "N'importe quelle boule dans n'importe quelle poche : +1 par boule, −1 par faute. Joue jusqu'à {0} points ; le triangle se remplit automatiquement.", "Cualquier bola en cualquier tronera: +1 por bola, −1 por falta. Juega hasta {0} puntos; el triángulo se rellena solo."], ["Rakt på", "Straight in", "Gerader Stoß", "Tout droit", "Directo"], ["Sänk bollen rakt i hörnfickan.", "Pot the ball straight into the corner pocket.", "Versenke die Kugel gerade in der Ecktasche.", "Empoche la boule tout droit dans la poche de coin.", "Mete la bola directa en la tronera de la esquina."], ["Skär den", "Cut it", "Dünn schneiden", "Coupé", "Cortarla"], ["Snedskott mot hörnfickan.", "A cut shot into the corner pocket.", "Ein Schnittstoß in die Ecktasche.", "Un coup coupé vers la poche de coin.", "Un tiro cortado a la tronera de la esquina."], ["Trång ficka", "Tight pocket", "Enge Tasche", "Poche serrée", "Tronera estrecha"], ["Sidofickan förlåter lite.", "The side pocket forgives little.", "Die Seitentasche verzeiht wenig.", "La poche du milieu pardonne peu.", "La tronera lateral perdona poco."], ["Hörnrunda", "Corner round", "Eckenrunde", "Tour des coins", "Ronda de esquinas"], ["Sex bollar, en vid varje ficka.", "Six balls, one by each pocket.", "Sechs Kugeln, eine an jeder Tasche.", "Six boules, une près de chaque poche.", "Seis bolas, una junto a cada tronera."], ["Trion", "The trio", "Das Trio", "Le trio", "El trío"], ["Tre bollar på rad.", "Three balls in a row.", "Drei Kugeln in einer Reihe.", "Trois boules alignées.", "Tres bolas en fila."], ["Slutspelet", "Endgame", "Endspiel", "Fin de partie", "Final de partida"], ["Fyra utspridda bollar.", "Four scattered balls.", "Vier verstreute Kugeln.", "Quatre boules dispersées.", "Cuatro bolas dispersas."], ["Precision", "Precision", "Präzision", "Précision", "Precisión"], ["Sänk så många som möjligt av 10 bollar (tre försök var).", "Pot as many as possible out of 10 balls (three attempts each).", "Versenke so viele wie möglich von 10 Kugeln (je drei Versuche).", "Empoche-en un maximum sur 10 boules (trois essais chacune).", "Mete cuantas puedas de 10 bolas (tres intentos cada una)."], ["Serien", "The streak", "Die Serie", "La série", "La racha"], ["15 bollar utspridda. Sänk så många du kan i rad – första missen avslutar.", "15 balls spread out. Pot as many in a row as you can – the first miss ends it.", "15 verstreute Kugeln. Versenke so viele wie möglich hintereinander – der erste Fehlschuss beendet es.", "15 boules dispersées. Empoche-en le plus d'affilée – le premier raté y met fin.", "15 bolas dispersas. Mete tantas seguidas como puedas: el primer fallo termina."], ["Niaren", "The nine", "Die Neun", "La neuf", "La nueve"], ["Rensa 9-ball-bordet och sänk nian.", "Clear the 9-ball table and pot the nine.", "Räume den 9-Ball-Tisch ab und versenke die Neun.", "Nettoie la table de 9-ball et empoche la neuf.", "Despeja la mesa de 9-ball y mete la nueve."], ["av 10", "of 10", "von 10", "sur 10", "de 10"], ["i rad", "in a row", "in Folge", "d'affilée", "seguidas"], ["Klassisk", "Classic", "Klassisch", "Classique", "Clásica"], ["Turnering", "Tournament", "Turnier", "Tournoi", "Torneo"], ["Burgundy", "Burgundy", "Burgundy", "Burgundy", "Burgundy"], ["Midnatt", "Midnight", "Mitternacht", "Minuit", "Medianoche"], ["Nordic", "Nordic", "Nordic", "Nordic", "Nordic"], ["Argyle", "Argyle", "Argyle", "Argyle", "Argyle"], ["Randig", "Striped", "Gestreift", "Rayé", "Rayada"], ["Rutig", "Checkered", "Kariert", "Quadrillé", "Cuadros"], ["Eget", "Custom", "Eigener", "Perso", "Propio"], ["Lönn", "Maple", "Ahorn", "Érable", "Arce"], ["Karmosin", "Crimson", "Karmesin", "Carmin", "Carmesí"], ["Kol", "Charcoal", "Kohle", "Charbon", "Carbón"], ["Neon", "Neon", "Neon", "Neon", "Neon"], ["Elfenben", "Ivory", "Elfenbein", "Ivoire", "Marfil"], ["Violett", "Violet", "Violett", "Violet", "Violeta"], ["Egen", "Custom", "Eigene", "Perso", "Propia"], ["Rak in", "Straight in", "Gerade rein", "Tout droit", "Directo"], ["Rakt skott mot hörnfickan. Perfekt för att känna kraften.", "A straight shot at the corner pocket. Perfect for getting a feel for power.", "Ein gerader Stoß auf die Ecktasche. Perfekt, um ein Gefühl für die Kraft zu bekommen.", "Un coup droit vers la poche de coin. Parfait pour sentir la puissance.", "Un tiro recto a la tronera de la esquina. Perfecto para sentir la fuerza."], ["Snedskott", "Cut shot", "Schnittstoß", "Coup coupé", "Tiro cortado"], ["Skär bollen i hörnfickan. Sikta med siktlinjens spökboll.", "Cut the ball into the corner pocket. Aim with the ghost ball on the aim line.", "Schneide die Kugel in die Ecktasche. Ziele mit der Geisterkugel der Ziellinie.", "Coupe la boule dans la poche de coin. Vise avec la boule fantôme de la ligne de visée.", "Corta la bola hacia la tronera de la esquina. Apunta con la bola fantasma de la línea de puntería."], ["Sidofickan", "The side pocket", "Die Seitentasche", "La poche du milieu", "La tronera lateral"], ["Sidofickan är trång – sikta noga.", "The side pocket is tight – aim carefully.", "Die Seitentasche ist eng – ziele sorgfältig.", "La poche du milieu est serrée – vise avec soin.", "La tronera lateral es estrecha: apunta con cuidado."], ["Hörnen", "The corners", "Die Ecken", "Les coins", "Las esquinas"], ["Sex bollar, en vid varje ficka. Sänk alla.", "Six balls, one by each pocket. Pot them all.", "Sechs Kugeln, eine an jeder Tasche. Versenke alle.", "Six boules, une près de chaque poche. Empoche-les toutes.", "Seis bolas, una junto a cada tronera. Mételas todas."], ["Tre bollar på rad – planera ordningen.", "Three balls in a row – plan the order.", "Drei Kugeln in einer Reihe – plane die Reihenfolge.", "Trois boules alignées – planifie l'ordre.", "Tres bolas en fila: planifica el orden."], ["Slutspel", "Endgame", "Endspiel", "Fin de partie", "Final"], ["Fyra utspridda bollar. Klara dem på så få skott som möjligt.", "Four scattered balls. Clear them in as few shots as possible.", "Vier verstreute Kugeln. Räume sie mit möglichst wenigen Stößen ab.", "Quatre boules dispersées. Nettoie-les en un minimum de coups.", "Cuatro bolas dispersas. Despéjalas con los menos tiros posibles."], ["Bra skott! 👏", "Great shot! 👏", "Toller Stoß! 👏", "Beau coup ! 👏", "¡Gran tiro! 👏"], ["Pech!", "Unlucky!", "Pech!", "Pas de chance !", "¡Mala suerte!"], ["Snyggt!", "Nice one!", "Schön!", "Joli !", "¡Genial!"], ["Revansch?", "Rematch?", "Revanche?", "Revanche ?", "¿Revancha?"], ["GG", "GG", "GG", "GG", "GG"], ["😂", "😂", "😂", "😂", "😂"], ["😮", "😮", "😮", "😮", "😮"], ["🔥", "🔥", "🔥", "🔥", "🔥"], ["👍", "👍", "👍", "👍", "👍"], ["😭", "😭", "😭", "😭", "😭"], ["Övningsläge", "Practice mode", "Übungsmodus", "Mode entraînement", "Modo práctica"], ["Bästa serie", "Best streak", "Beste Serie", "Meilleure série", "Mejor racha"], ["Träff", "Pots", "Treffer", "Réussites", "Aciertos"], ["Bord klarade", "Tables cleared", "Tische geräumt", "Tables nettoyées", "Mesas despejadas"], ["Kraft", "Power", "Kraft", "Puissance", "Fuerza"], ["Effekt: klicka där kön ska träffa vita bollen. Dubbelklicka för att nollställa.", "Spin: click where the cue should hit the cue ball. Double-click to reset.", "Effekt: Klicke dorthin, wo der Queue die Weiße treffen soll. Doppelklick zum Zurücksetzen.", "Effet : clique où la queue doit toucher la blanche. Double-clic pour réinitialiser.", "Efecto: haz clic donde el taco debe golpear la blanca. Doble clic para restablecer."], ["Effekt", "Spin", "Effet", "Effet", "Efecto"], ["Följ ↑ · Dra ↓", "Follow ↑ · Draw ↓", "Nachlauf ↑ · Rückläufer ↓", "Coulé ↑ · Rétro ↓", "Seguir ↑ · Retroceso ↓"], ["Sida ← →", "Side ← →", "Seite ← →", "Côté ← →", "Lado ← →"], ["Ovanifrån", "Top view", "Von oben", "Vue du dessus", "Vista cenital"], ["💬 Chatt", "💬 Chat", "💬 Chat", "💬 Chat", "💬 Chat"], ["Ångra", "Undo", "Zurück", "Annuler", "Deshacer"], ["Skriv och tryck Enter…", "Type and press Enter…", "Schreiben und Enter drücken…", "Écris et appuie sur Entrée…", "Escribe y pulsa Intro…"], ["⟲ Repris · slow motion · klicka eller Esc för att stänga", "⟲ Replay · slow motion · click or Esc to close", "⟲ Wiederholung · Zeitlupe · Klick oder Esc zum Schließen", "⟲ Replay · ralenti · clique ou Échap pour fermer", "⟲ Repetición · cámara lenta · clic o Esc para cerrar"], ["Vänsterklick + dra = sikta · Håll HÖGERKLICK och dra musen NEDÅT = kraft, släpp = skjut · Scroll = zoom · Mellanslag = skjut", "Left-click + drag = aim · Hold RIGHT-click and drag the mouse DOWN = power, release = shoot · Scroll = zoom · Space = shoot", "Linksklick + ziehen = zielen · RECHTSKLICK halten und Maus NACH UNTEN ziehen = Kraft, loslassen = schießen · Scrollen = Zoom · Leertaste = schießen", "Clic gauche + glisser = viser · Maintiens le clic DROIT et glisse la souris VERS LE BAS = puissance, relâche = tirer · Molette = zoom · Espace = tirer", "Clic izquierdo + arrastrar = apuntar · Mantén el clic DERECHO y arrastra el ratón HACIA ABAJO = fuerza, suelta = disparar · Rueda = zoom · Espacio = disparar"], ["Övningsläge · 3D", "Practice mode · 3D", "Übungsmodus · 3D", "Mode entraînement · 3D", "Modo práctica · 3D"], ["Välj spelläge", "Choose game mode", "Spielmodus wählen", "Choisir le mode de jeu", "Elegir modo de juego"], ["Samla stjärnor", "Collect stars", "Sterne sammeln", "Collecte des étoiles", "Reúne estrellas"], ["Anpassa bord & kö", "Customize table & cue", "Tisch & Queue anpassen", "Personnaliser table et queue", "Personalizar mesa y taco"], ["Spela online", "Play online", "Online spielen", "Jouer en ligne", "Jugar en línea"], ["Turordnat mot en vän", "Turn-based against a friend", "Rundenbasiert gegen einen Freund", "Au tour par tour contre un ami", "Por turnos contra un amigo"], ["Träningsguide", "Training guide", "Trainingsratgeber", "Guide d'entraînement", "Guía de entrenamiento"], ["Effekt, position och teknik", "Spin, position and technique", "Effet, Stellung und Technik", "Effets, position et technique", "Efectos, posición y técnica"], ["Statistik", "Statistics", "Statistik", "Statistiques", "Estadísticas"], ["Så spelar du", "How to play", "So wird gespielt", "Comment jouer", "Cómo se juega"], ["Inställningar", "Settings", "Einstellungen", "Paramètres", "Ajustes"], ["Din webbläsare ritar 3D utan grafikkort.", "Your browser is drawing 3D without a graphics card.", "Dein Browser zeichnet 3D ohne Grafikkarte.", "Ton navigateur dessine la 3D sans carte graphique.", "Tu navegador dibuja 3D sin tarjeta gráfica."], ["Spelet kan laggla. Slå på", "The game may lag. Turn on", "Das Spiel kann ruckeln. Aktiviere", "Le jeu peut ramer. Active", "El juego puede ir lento. Activa"], ["Använd grafikacceleration", "Use hardware acceleration", "Hardwarebeschleunigung verwenden", "Utiliser l'accélération matérielle", "Usar aceleración por hardware"], ["i webbläsarens inställningar → System och starta om den. Kvaliteten har satts till Låg.", "in your browser's settings → System and restart it. Quality has been set to Low.", "in den Browsereinstellungen → System und starte ihn neu. Die Qualität wurde auf Niedrig gesetzt.", "dans les paramètres du navigateur → Système et redémarre-le. La qualité a été réglée sur Basse.", "en los ajustes del navegador → Sistema y reinícialo. La calidad se ha puesto en Baja."], ["Turordnat 8-ball mot en vän, med chatt, poängställning och valfri skottklocka. Ni måste båda ha sidan öppen samtidigt.", "Turn-based 8-ball against a friend, with chat, score tracking and an optional shot clock. You both need the page open at the same time, and your friend needs access to the page with permission to take part.", "Rundenbasiertes 8-Ball gegen einen Freund, mit Chat, Punktestand und optionaler Schussuhr. Ihr müsst beide die Seite gleichzeitig geöffnet haben, und dein Freund braucht Zugriff auf die Seite mit Teilnahmerecht.", "Du 8-ball au tour par tour contre un ami, avec chat, score et chrono optionnel. Vous devez tous deux avoir la page ouverte en même temps, et ton ami doit avoir accès à la page avec le droit de participer.", "8-ball por turnos contra un amigo, con chat, marcador y reloj de tiro opcional. Los dos debéis tener la página abierta a la vez, y tu amigo necesita acceso a la página con permiso para participar."], ["Ditt namn", "Your name", "Dein Name", "Ton nom", "Tu nombre"], ["Spelare", "Player", "Spieler", "Joueur", "Jugador"], ["Skapa rum", "Create room", "Raum erstellen", "Créer une salle", "Crear sala"], ["Ingen skottklocka", "No shot clock", "Keine Schussuhr", "Pas de chrono", "Sin reloj de tiro"], ["30 s", "30 s", "30 s", "30 s", "30 s"], ["60 s", "60 s", "60 s", "60 s", "60 s"], ["Gå med i rum", "Join a room", "Raum beitreten", "Rejoindre une salle", "Unirse a una sala"], ["Rumskod", "Room code", "Raumcode", "Code de la salle", "Código de sala"], ["Gå med", "Join", "Beitreten", "Rejoindre", "Unirse"], ["← Tillbaka", "← Back", "← Zurück", "← Retour", "← Atrás"], ["Var på vita bollen du träffar bestämmer vad den gör efter träffen. Klicka på den lilla bollen nere till vänster i spelet för att välja punkt.", "Where on the cue ball you hit decides what it does after contact. Click the small ball at the bottom left of the game to choose a point.", "Wo du die Weiße triffst, bestimmt, was sie nach dem Treffer tut. Klicke im Spiel auf die kleine Kugel unten links, um einen Punkt zu wählen.", "L'endroit où tu frappes la blanche détermine ce qu'elle fait après le contact. Clique sur la petite bille en bas à gauche du jeu pour choisir un point.", "El punto de la blanca donde golpeas decide lo que hace tras el contacto. Haz clic en la bolita de abajo a la izquierda del juego para elegir un punto."], ["Överdel = följ", "Top = follow", "Oben = Nachlauf", "Haut = coulé", "Arriba = seguir"], ["Mitten = ren", "Center = clean", "Mitte = sauber", "Centre = net", "Centro = limpio"], ["Underdel = back", "Bottom = draw", "Unten = Rückläufer", "Bas = rétro", "Abajo = retroceso"], ["Sida = effekt", "Side = spin", "Seite = Drall", "Côté = effet", "Lado = efecto"], ["<b>Följ (överdel):</b> vita bollen rullar framåt efter träffen. Använd för att komma till nästa boll.", "<b>Follow (top):</b> the cue ball keeps rolling forward after contact. Use it to get to the next ball.", "<b>Nachlauf (oben):</b> die Weiße rollt nach dem Treffer weiter. Nutze es, um zur nächsten Kugel zu kommen.", "<b>Coulé (haut) :</b> la blanche continue d'avancer après le contact. Utilise-le pour atteindre la boule suivante.", "<b>Seguir (arriba):</b> la blanca sigue rodando hacia delante tras el golpe. Úsalo para llegar a la siguiente bola."], ["<b>Back (underdel):</b> vita bollen drar tillbaka. Träna på det vid raka skott.", "<b>Draw (bottom):</b> the cue ball pulls back. Practice it on straight shots.", "<b>Rückläufer (unten):</b> die Weiße zieht zurück. Übe das bei geraden Stößen.", "<b>Rétro (bas) :</b> la blanche revient en arrière. Entraîne-toi sur les coups droits.", "<b>Retroceso (abajo):</b> la blanca vuelve atrás. Practícalo en tiros rectos."], ["<b>Sidoeffekt:</b> ändrar hur vita studsar i kudden och sänker kraften. Sikta lite åt motsatt håll.", "<b>Side spin:</b> changes how the cue ball bounces off the cushion and reduces power. Aim slightly the opposite way.", "<b>Seitendrall:</b> verändert, wie die Weiße von der Bande abprallt, und verringert die Kraft. Ziele leicht in die Gegenrichtung.", "<b>Effet latéral :</b> change le rebond de la blanche à la bande et réduit la puissance. Vise légèrement dans l'autre sens.", "<b>Efecto lateral:</b> cambia cómo rebota la blanca en la banda y reduce la fuerza. Apunta un poco al lado contrario."], ["<b>Mitten:</b> mest exakt. Börja alltid här.", "<b>Center:</b> the most precise. Always start here.", "<b>Mitte:</b> am genauesten. Fang immer hier an.", "<b>Centre :</b> le plus précis. Commence toujours ici.", "<b>Centro:</b> lo más preciso. Empieza siempre aquí."], ["Position och teknik", "Position and technique", "Stellung und Technik", "Position et technique", "Posición y técnica"], ["Tänk ett skott framåt: var vill du att vita bollen står efteråt?", "Think one shot ahead: where do you want the cue ball afterwards?", "Denk einen Stoß voraus: Wo soll die Weiße danach liegen?", "Pense un coup à l'avance : où veux-tu la blanche ensuite ?", "Piensa un tiro por delante: ¿dónde quieres la blanca después?"], ["Mjuka skott ger bäst kontroll. Slå hårt bara när du måste.", "Soft shots give the best control. Hit hard only when you have to.", "Weiche Stöße geben die beste Kontrolle. Schlag nur hart, wenn es nötig ist.", "Les coups doux donnent le meilleur contrôle. Tape fort seulement quand il le faut.", "Los tiros suaves dan el mejor control. Golpea fuerte solo cuando haga falta."], ["Använd siktlinjens spökboll för snedskott. Ju skarpare vinkel, desto tunnare träff.", "Use the aim line's ghost ball for cut shots. The sharper the angle, the thinner the hit.", "Nutze die Geisterkugel der Ziellinie für Schnittstöße. Je schärfer der Winkel, desto dünner der Treffer.", "Utilise la boule fantôme de la ligne de visée pour les coups coupés. Plus l'angle est fermé, plus le contact est fin.", "Usa la bola fantasma de la línea de puntería en tiros cortados. Cuanto más cerrado el ángulo, más fino el golpe."], ["Spöket i spellägena visar hur det gick förra gången du var bäst.", "The ghost in the game modes shows how it went the last time you were at your best.", "Der Geist in den Spielmodi zeigt, wie es bei deinem besten Versuch lief.", "Le fantôme dans les modes de jeu montre comment s'est passé ton meilleur essai.", "El fantasma en los modos de juego muestra cómo fue tu mejor intento."], ["Spelläge", "Game mode", "Spielmodus", "Mode de jeu", "Modo de juego"], ["Anpassa", "Customize", "Anpassen", "Personnaliser", "Personalizar"], ["Bord", "Table", "Tisch", "Table", "Mesa"], ["Duk", "Cloth", "Tuch", "Tapis", "Tapete"], ["Träram", "Frame", "Rahmen", "Cadre", "Marco"], ["Handtag", "Butt", "Griff", "Talon", "Culata"], ["Grepp", "Wrap", "Wickel", "Prise", "Empuñadura"], ["Detaljer", "Details", "Details", "Détails", "Detalles"], ["Valen syns direkt på bordet bakom menyn och sparas till nästa gång.", "Your choices show right away on the table behind the menu and are saved for next time.", "Deine Auswahl ist sofort auf dem Tisch hinter dem Menü zu sehen und wird für das nächste Mal gespeichert.", "Tes choix apparaissent tout de suite sur la table derrière le menu et sont enregistrés pour la prochaine fois.", "Tus elecciones se ven al instante en la mesa tras el menú y se guardan para la próxima vez."], ["Sänk alla dina bollar (hela 1–7 eller halva 9–15) och avsluta med åttan. Du övar själv, utan motståndare.", "Pot all your balls (solids 1–7 or stripes 9–15) and finish with the eight. You practice alone, with no opponent.", "Versenke alle deine Kugeln (volle 1–7 oder halbe 9–15) und beende mit der Acht. Du übst allein, ohne Gegner.", "Empoche toutes tes boules (pleines 1–7 ou rayées 9–15) et termine par la huit. Tu t'entraînes seul, sans adversaire.", "Mete todas tus bolas (lisas 1–7 o rayadas 9–15) y termina con la 8. Practicas solo, sin rival."], ["Styrning", "Controls", "Steuerung", "Commandes", "Controles"], ["<b>Sikta:</b> dra med musen, eller <kbd>←</kbd> <kbd>→</kbd> för finjustering (<kbd>Shift</kbd> = extra fint)", "<b>Aim:</b> drag with the mouse, or <kbd>←</kbd> <kbd>→</kbd> for fine adjustment (<kbd>Shift</kbd> = extra fine)", "<b>Zielen:</b> mit der Maus ziehen, oder <kbd>←</kbd> <kbd>→</kbd> zum Feinjustieren (<kbd>Shift</kbd> = extra fein)", "<b>Viser :</b> glisse avec la souris, ou <kbd>←</kbd> <kbd>→</kbd> pour affiner (<kbd>Maj</kbd> = très fin)", "<b>Apuntar:</b> arrastra con el ratón, o <kbd>←</kbd> <kbd>→</kbd> para afinar (<kbd>Mayús</kbd> = muy fino)"], ["<b>Kraft:</b> håll <b>högerklick</b> och dra musen nedåt (längre = hårdare), släpp för att skjuta. <kbd>↑</kbd> <kbd>↓</kbd> funkar också.", "<b>Power:</b> hold <b>right-click</b> and drag the mouse down (longer = harder), release to shoot. <kbd>↑</kbd> <kbd>↓</kbd> also work.", "<b>Kraft:</b> halte die <b>rechte Maustaste</b> gedrückt und ziehe die Maus nach unten (länger = härter), loslassen zum Schießen. <kbd>↑</kbd> <kbd>↓</kbd> gehen auch.", "<b>Puissance :</b> maintiens le <b>clic droit</b> et glisse la souris vers le bas (plus long = plus fort), relâche pour tirer. <kbd>↑</kbd> <kbd>↓</kbd> fonctionnent aussi.", "<b>Fuerza:</b> mantén el <b>clic derecho</b> y arrastra el ratón hacia abajo (más largo = más fuerte), suelta para disparar. <kbd>↑</kbd> <kbd>↓</kbd> también sirven."], ["<b>Effekt:</b> klicka på den lilla bollen nere till vänster", "<b>Spin:</b> click the small ball at the bottom left", "<b>Effet:</b> klicke auf die kleine Kugel unten links", "<b>Effet :</b> clique sur la petite bille en bas à gauche", "<b>Efecto:</b> haz clic en la bolita de abajo a la izquierda"], ["<b>Skjut:</b> <kbd>Mellanslag</kbd> eller knappen Skjut", "<b>Shoot:</b> <kbd>Space</kbd> or the Shoot button", "<b>Schießen:</b> <kbd>Leertaste</kbd> oder die Schießen-Taste", "<b>Tirer :</b> <kbd>Espace</kbd> ou le bouton Tirer", "<b>Disparar:</b> <kbd>Espacio</kbd> o el botón Disparar"], ["<b>Zoom:</b> mushjul · <kbd>T</kbd> ovanifrån · <kbd>G</kbd> siktlinje · <kbd>U</kbd> ångra · <kbd>Esc</kbd> meny", "<b>Zoom:</b> mouse wheel · <kbd>T</kbd> top view · <kbd>G</kbd> aim line · <kbd>U</kbd> undo · <kbd>Esc</kbd> menu", "<b>Zoom:</b> Mausrad · <kbd>T</kbd> Draufsicht · <kbd>G</kbd> Ziellinie · <kbd>U</kbd> zurück · <kbd>Esc</kbd> Menü", "<b>Zoom :</b> molette · <kbd>T</kbd> vue du dessus · <kbd>G</kbd> ligne de visée · <kbd>U</kbd> annuler · <kbd>Échap</kbd> menu", "<b>Zoom:</b> rueda del ratón · <kbd>T</kbd> vista cenital · <kbd>G</kbd> línea de puntería · <kbd>U</kbd> deshacer · <kbd>Esc</kbd> menú"], ["Regler", "Rules", "Regeln", "Règles", "Reglas"], ["Bordet är öppet tills du sänker en boll – då får du den gruppen.", "The table is open until you pot a ball – then you get that group.", "Der Tisch ist offen, bis du eine Kugel versenkst – dann bekommst du diese Gruppe.", "La table est ouverte tant que tu n'as pas empoché une boule – tu obtiens alors ce groupe.", "La mesa está abierta hasta que metes una bola; entonces te quedas con ese grupo."], ["Foul: träffar fel boll först, missar alla bollar, eller sänker den vita. Du får då boll i hand.", "Foul: hitting the wrong ball first, missing every ball, or potting the cue ball. You then give ball in hand.", "Foul: zuerst die falsche Kugel treffen, keine Kugel treffen oder die Weiße versenken. Der Gegner bekommt dann die Weiße in die Hand.", "Faute : toucher la mauvaise boule en premier, rater toutes les boules ou empocher la blanche. L'adversaire a alors la bille en main.", "Falta: tocar primero la bola equivocada, fallar todas las bolas o meter la blanca. Entonces se da bola en mano."], ["Åttan i hål för tidigt = förlust.", "Potting the eight too early = loss.", "Die Acht zu früh versenken = Niederlage.", "Empocher la huit trop tôt = défaite.", "Meter la bola 8 demasiado pronto = derrota."], ["Grafikkvalitet", "Graphics quality", "Grafikqualität", "Qualité graphique", "Calidad gráfica"], ["Auto", "Auto", "Auto", "Auto", "Auto"], ["Låg", "Low", "Niedrig", "Basse", "Baja"], ["Medel", "Medium", "Mittel", "Moyenne", "Media"], ["Hög", "High", "Hoch", "Haute", "Alta"], ["Låg stänger av skuggor. Välj Låg om det laggar.", "Low turns off shadows. Choose Low if the game lags.", "Niedrig schaltet Schatten aus. Wähle Niedrig, wenn das Spiel ruckelt.", "Basse désactive les ombres. Choisis Basse si le jeu rame.", "Baja desactiva las sombras. Elige Baja si el juego va lento."], ["Övrigt", "Other", "Sonstiges", "Autres", "Otros"], ["Övningsläge · ingen motståndare", "Practice mode · no opponent", "Übungsmodus · kein Gegner", "Mode entraînement · pas d'adversaire", "Modo práctica · sin rival"], ["Konto", "Account", "Konto", "Compte", "Cuenta"], ["Logga in", "Log in", "Anmelden", "Se connecter", "Iniciar sesión"], ["Skapa konto", "Create account", "Konto erstellen", "Créer un compte", "Crear cuenta"], ["Logga ut", "Log out", "Abmelden", "Se déconnecter", "Cerrar sesión"], ["Användarnamn", "Username", "Benutzername", "Nom d'utilisateur", "Nombre de usuario"], ["Lösenord", "Password", "Passwort", "Mot de passe", "Contraseña"], ["Skapa ett konto för att spara dina rekord, stjärnor och inställningar i molnet och spela på flera enheter.", "Create an account to save your records, stars and settings in the cloud and play on several devices.", "Erstelle ein Konto, um deine Rekorde, Sterne und Einstellungen in der Cloud zu speichern und auf mehreren Geräten zu spielen.", "Crée un compte pour sauvegarder tes records, étoiles et réglages dans le cloud et jouer sur plusieurs appareils.", "Crea una cuenta para guardar tus récords, estrellas y ajustes en la nube y jugar en varios dispositivos."], ["Spara nu", "Save now", "Jetzt speichern", "Enregistrer maintenant", "Guardar ahora"], ["Topplista", "Leaderboard", "Bestenliste", "Classement", "Clasificación"], ["Mest stjärnor", "Most stars", "Die meisten Sterne", "Le plus d'étoiles", "Más estrellas"], ["Flest onlinevinster", "Most online wins", "Die meisten Online-Siege", "Le plus de victoires en ligne", "Más victorias en línea"], ["Ingen än.", "No one yet.", "Noch niemand.", "Personne pour l'instant.", "Nadie todavía."], ["Inloggad som {0}", "Logged in as {0}", "Angemeldet als {0}", "Connecté en tant que {0}", "Sesión iniciada como {0}"], ["Sparad {0}", "Saved {0}", "Gespeichert {0}", "Enregistré {0}", "Guardado {0}"], ["Sparar…", "Saving…", "Speichere…", "Enregistrement…", "Guardando…"], ["Din data sparas automatiskt.", "Your data is saved automatically.", "Deine Daten werden automatisch gespeichert.", "Tes données sont enregistrées automatiquement.", "Tus datos se guardan automáticamente."], ["Kunde inte spara. Försöker igen vid nästa ändring.", "Couldn't save. Will try again on the next change.", "Speichern fehlgeschlagen. Beim nächsten Änderung wird es erneut versucht.", "Échec de l'enregistrement. Nouvel essai à la prochaine modification.", "No se pudo guardar. Se reintentará en el próximo cambio."], ["Kontot skapat!", "Account created!", "Konto erstellt!", "Compte créé !", "¡Cuenta creada!"], ["Inloggad!", "Logged in!", "Angemeldet!", "Connecté !", "¡Sesión iniciada!"], ["Utloggad.", "Logged out.", "Abgemeldet.", "Déconnecté.", "Sesión cerrada."], ["Sessionen har gått ut. Logga in igen.", "Your session has expired. Please log in again.", "Die Sitzung ist abgelaufen. Bitte melde dich erneut an.", "La session a expiré. Reconnecte-toi.", "La sesión ha caducado. Inicia sesión de nuevo."], ["Namnet måste vara 3–16 tecken (bokstäver, siffror, _ eller -).", "The name must be 3–16 characters (letters, digits, _ or -).", "Der Name muss 3–16 Zeichen lang sein (Buchstaben, Ziffern, _ oder -).", "Le nom doit faire 3 à 16 caractères (lettres, chiffres, _ ou -).", "El nombre debe tener 3–16 caracteres (letras, números, _ o -)."], ["Lösenordet måste vara minst 6 tecken.", "The password must be at least 6 characters.", "Das Passwort muss mindestens 6 Zeichen lang sein.", "Le mot de passe doit faire au moins 6 caractères.", "La contraseña debe tener al menos 6 caracteres."], ["Namnet är upptaget.", "That name is taken.", "Dieser Name ist vergeben.", "Ce nom est déjà pris.", "Ese nombre ya está en uso."], ["Fel namn eller lösenord.", "Wrong name or password.", "Falscher Name oder falsches Passwort.", "Nom ou mot de passe incorrect.", "Nombre o contraseña incorrectos."], ["För många försök. Vänta en stund.", "Too many attempts. Please wait a while.", "Zu viele Versuche. Bitte warte einen Moment.", "Trop de tentatives. Attends un moment.", "Demasiados intentos. Espera un momento."], ["Kunde inte nå servern.", "Couldn't reach the server.", "Server nicht erreichbar.", "Impossible de joindre le serveur.", "No se pudo contactar con el servidor."]];
+
+</script>
 <script>
 /* ============================================================
    Biljardfysik (2D med spin) + regler för 8-ball
@@ -799,6 +966,19 @@ const PHYS = (function () {
   const P = PHYS, R = P.R, HX = P.HX, HZ = P.HZ;
   const $ = id => document.getElementById(id);
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  /* ---------------- Språk (i18n) ---------------- */
+  let LANG = 'sv', DICT = null, EN = null;
+  function tr(s, a) {
+    let o = DICT ? DICT[s] : undefined;
+    if (o === undefined && EN) o = EN[s];
+    if (o === undefined) o = s;
+    if (a) o = o.replace(/\{(\d+)\}/g, (_, i) => a[i] !== undefined ? a[i] : _);
+    return o;
+  }
+  const trn = (n, one, many) => tr(n === 1 ? one : many, [n]);
+  const nameG = g => tr(g === 'solid' ? 'hela' : 'halva');
+  function trReason(r) { const m = /^Lägsta bollen \((\d+)\) skulle träffas först$/.exec(r); return m ? tr('Lägsta bollen ({0}) skulle träffas först', [m[1]]) : tr(r); }
+  const trReasons = rs => rs.map(trReason).join(' · ');
   const fail = msg => { const l = $('loading'); l.classList.remove('hide'); l.innerHTML = '<div class="lmsg">' + msg + '</div>'; };
 
   if (typeof THREE === 'undefined') { fail('Kunde inte ladda 3D-biblioteket (Three.js).<br>Kontrollera anslutningen och ladda om sidan.'); return; }
@@ -1177,38 +1357,137 @@ const PHYS = (function () {
   const ghostRing = ringMesh(0xffffff, 0.85, R - 0.3, R);
   const placeRing = ringMesh(0x6dff9a, 0.9, R + 0.8, R + 1.5);
 
+  /* ---- Satisfierande hål-effekt: ringpuls, gnistor, glimt ---- */
+  const FX = { rings: [], sparks: [], glow: [] };
+  const sparkGeo = new THREE.SphereGeometry(0.55, 6, 5);
+  const ringGeo = new THREE.RingGeometry(0.82, 1, 40);
+  function fxSpark() {
+    for (const f of FX.sparks) if (!f.on) return f;
+    if (FX.sparks.length > 60) return null;
+    const mt = new THREE.MeshBasicMaterial({ color: 0xffe3a0, transparent: true, opacity: 1, depthWrite: false });
+    const m = new THREE.Mesh(sparkGeo, mt); m.visible = false; scene.add(m);
+    const f = { m, mt, on: false, vx: 0, vy: 0, vz: 0, life: 0, max: 1 }; FX.sparks.push(f); return f;
+  }
+  function fxRing() {
+    for (const f of FX.rings) if (!f.on) return f;
+    const mt = new THREE.MeshBasicMaterial({ color: 0xffe3a0, transparent: true, opacity: 1, depthWrite: false, side: THREE.DoubleSide });
+    const m = new THREE.Mesh(ringGeo, mt); m.rotation.x = -Math.PI / 2; m.visible = false; scene.add(m);
+    const f = { m, mt, on: false, life: 0, max: 0.6, r0: 8, r1: 20 }; FX.rings.push(f); return f;
+  }
+  function potFx(pk, cue) {
+    if (S.menu) return;
+    const col = cue ? 0xffffff : 0xffd98a;
+    for (let k = 0; k < 2; k++) {
+      const r = fxRing(); r.on = true; r.life = -k * 0.12; r.max = 0.55 + k * 0.1;
+      r.r0 = (pk.corner ? 7 : 6.5); r.r1 = r.r0 * (2.6 + k * 0.6); r.mt.color.set(col); r.m.position.set(pk.x, 0.35, pk.z);
+    }
+    const n = cue ? 8 : 16;
+    for (let i = 0; i < n; i++) {
+      const f = fxSpark(); if (!f) break;
+      const a = Math.random() * Math.PI * 2, sp = 25 + Math.random() * 55;
+      f.on = true; f.life = 0; f.max = 0.5 + Math.random() * 0.35;
+      f.vx = Math.cos(a) * sp; f.vz = Math.sin(a) * sp; f.vy = 70 + Math.random() * 90;
+      f.mt.color.set(col); f.m.position.set(pk.x, 1.5, pk.z); f.m.scale.setScalar(0.7 + Math.random() * 0.8); f.m.visible = true;
+    }
+  }
+  function fxUpdate(dt) {
+    for (const f of FX.rings) {
+      if (!f.on) continue;
+      f.life += dt; if (f.life < 0) { f.m.visible = false; continue; }
+      const k = f.life / f.max;
+      if (k >= 1) { f.on = false; f.m.visible = false; continue; }
+      const e = 1 - Math.pow(1 - k, 3), r = f.r0 + (f.r1 - f.r0) * e;
+      f.m.visible = true; f.m.scale.set(r, r, r); f.mt.opacity = 0.75 * (1 - k);
+    }
+    for (const f of FX.sparks) {
+      if (!f.on) continue;
+      f.life += dt; const k = f.life / f.max;
+      if (k >= 1) { f.on = false; f.m.visible = false; continue; }
+      f.vy -= 260 * dt; f.m.position.x += f.vx * dt; f.m.position.y = Math.max(0.5, f.m.position.y + f.vy * dt); f.m.position.z += f.vz * dt;
+      f.mt.opacity = 1 - k * k;
+    }
+  }
+
   /* ---------------- Ljud ---------------- */
-  let AC = null, master = null, noiseBuf = null, lastSnd = 0;
+  let AC = null, master = null, noiseBuf = null, lastSnd = 0, rollGain = null, rollSpeed = 0;
   function ensureAudio() {
     if (AC) { if (AC.state === 'suspended') AC.resume().catch(() => { }); return; }
     try {
       AC = new (window.AudioContext || window.webkitAudioContext)();
-      master = AC.createGain(); master.gain.value = 0.55; master.connect(AC.destination);
-      noiseBuf = AC.createBuffer(1, Math.floor(AC.sampleRate * 0.6), AC.sampleRate);
+      // mastering: kompressor
+      const comp = AC.createDynamicsCompressor(); comp.threshold.value = -16; comp.knee.value = 18; comp.ratio.value = 4; comp.attack.value = 0.002; comp.release.value = 0.15;
+      comp.connect(AC.destination);
+      master = AC.createGain(); master.gain.value = 0.8; master.connect(comp);
+      noiseBuf = AC.createBuffer(1, Math.floor(AC.sampleRate * 1.5), AC.sampleRate);
       const d = noiseBuf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
     } catch (e) { AC = null; }
   }
-  function tone(f0, f1, dur, vol, type) {
+  function outNode() { return master; }
+  function tone(f0, f1, dur, vol, type, dest) {
     if (!AC || !S.sound) return;
     const o = AC.createOscillator(), g = AC.createGain(), t = AC.currentTime;
     o.type = type || 'sine'; o.frequency.setValueAtTime(f0, t); o.frequency.exponentialRampToValueAtTime(Math.max(20, f1), t + dur);
     g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    o.connect(g); g.connect(master); o.start(t); o.stop(t + dur + 0.02);
+    o.connect(g); g.connect(dest || master); o.start(t); o.stop(t + dur + 0.02);
   }
-  function noise(dur, vol, ftype, freq, q) {
+  // dämpad sinus: en "resonans" hos bollen eller bordet
+  function ping(f, decay, vol, dest, delay) {
     if (!AC || !S.sound) return;
-    const s = AC.createBufferSource(), f = AC.createBiquadFilter(), g = AC.createGain(), t = AC.currentTime;
+    const o = AC.createOscillator(), g = AC.createGain(), t = AC.currentTime + (delay || 0);
+    o.type = 'sine'; o.frequency.value = f;
+    g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(vol, t + 0.0012); g.gain.exponentialRampToValueAtTime(0.0001, t + decay);
+    o.connect(g); g.connect(dest || master); o.start(t); o.stop(t + decay + 0.02);
+  }
+  function noise(dur, vol, ftype, freq, q, dest, delay) {
+    if (!AC || !S.sound) return;
+    const s = AC.createBufferSource(), f = AC.createBiquadFilter(), g = AC.createGain(), t = AC.currentTime + (delay || 0);
     s.buffer = noiseBuf; f.type = ftype; f.frequency.value = freq; f.Q.value = q || 1;
-    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    s.connect(f); f.connect(g); g.connect(master); s.start(t, Math.random() * 0.2); s.stop(t + dur + 0.02);
+    g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(vol, t + 0.001); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    s.connect(f); f.connect(g); g.connect(dest || master); s.start(t, Math.random() * 0.5); s.stop(t + dur + 0.02);
   }
   const sfx = {
-    ball(v) { const n = performance.now(); if (n - lastSnd < 12) return; lastSnd = n; const k = clamp(v / 250, 0.04, 1); tone(2300 + rnd(-150, 150) + k * 500, 1400, 0.05, 0.35 * k, 'triangle'); noise(0.035, 0.45 * k, 'bandpass', 3200, 1.2); if (v > 320) { noise(0.05, 0.35, 'highpass', 5200, 0.8); tone(380, 200, 0.07, 0.25, 'sine'); } },
-    cushion(v) { const k = clamp(v / 250, 0.04, 1); tone(120, 60, 0.12, 0.5 * k, 'sine'); noise(0.07, 0.25 * k, 'lowpass', 900, 0.7); },
-    pocket(v) { const k = clamp(v / 200 + 0.3, 0.3, 1); tone(110, 50, 0.22, 0.6 * k, 'sine'); noise(0.28, 0.3 * k, 'lowpass', 600, 0.8); setTimeout(() => noise(0.12, 0.2 * k, 'bandpass', 1500, 2), 160); },
-    cue(p) { tone(900, 420, 0.06, 0.3 + 0.5 * p, 'triangle'); noise(0.04, 0.4 + 0.4 * p, 'bandpass', 2600, 1.5); }
+    // boll mot boll: hårt, torrt "klick" av fenolharts + liten dunk från bordet
+    ball(v, x) {
+      const n = performance.now(); if (n - lastSnd < 10) return; lastSnd = n;
+      if (!AC || !S.sound) return;
+      const k = clamp(v / 300, 0.03, 1), a = Math.pow(k, 0.75), j = 1 + rnd(-0.035, 0.035), d = outNode(x);
+      noise(0.012, 0.55 * a, 'highpass', 3000, 0.7, d);
+      ping(3150 * j, 0.045, 0.34 * a, d);
+      ping(4720 * j, 0.03, 0.22 * a, d);
+      if (k > 0.35) ping(7300 * j, 0.016, 0.12 * a, d);
+      ping(1180 * j, 0.06, 0.12 * a, d);
+      tone(210, 120, 0.06, 0.2 * a, 'sine', d);
+      if (k > 0.8) noise(0.03, 0.25, 'bandpass', 5200, 1.2, d);
+    },
+    // boll mot kudde: gummidämpad dunk med lite trä i
+    cushion(v, x) {
+      if (!AC || !S.sound) return;
+      const k = clamp(v / 250, 0.04, 1), a = Math.pow(k, 0.8), d = outNode(x), j = 1 + rnd(-0.06, 0.06);
+      tone(135 * j, 62, 0.13, 0.55 * a, 'sine', d);
+      noise(0.09, 0.28 * a, 'lowpass', 650, 0.7, d);
+      ping(290 * j, 0.09, 0.16 * a, d);
+      ping(1900 * j, 0.018, 0.1 * a, d);
+    },
+    // ficka: hårt "tock" i läderkorg, rullande studs och slutligen tunt klick i bollrännan
+    pocket(v, x) {
+      if (!AC || !S.sound) return;
+      const k = clamp(v / 200 + 0.3, 0.3, 1), d = outNode(x);
+      tone(120, 55, 0.2, 0.5 * k, 'sine', d);
+      noise(0.22, 0.28 * k, 'lowpass', 520, 0.8, d);
+      ping(520, 0.07, 0.14 * k, d);
+      for (let i = 0; i < 4; i++) { const t = 0.14 + i * (0.09 - i * 0.012); ping(2500 - i * 350, 0.03, 0.1 * k * (1 - i * 0.18), d, t); noise(0.05, 0.1 * k * (1 - i * 0.2), 'bandpass', 1300, 1.5, d, t); }
+      ping(1650, 0.05, 0.1 * k, d, 0.62); ping(2450, 0.04, 0.07 * k, d, 0.62);
+      ping(1318, 0.16, 0.07 * k, d, 0.3); ping(1760, 0.22, 0.06 * k, d, 0.36); ping(2637, 0.3, 0.035 * k, d, 0.36);
+    },
+    // kö mot vit boll: kort, torrt tipp-"tack"
+    cue(p) {
+      if (!AC || !S.sound) return;
+      const a = 0.35 + 0.65 * p, d = master;
+      noise(0.014, 0.5 * a, 'bandpass', 3400, 1.1, d);
+      ping(2200, 0.035, 0.22 * a, d); ping(3600, 0.02, 0.12 * a, d);
+      tone(170, 90, 0.07, 0.3 * a, 'sine', d);
+    }
   };
-
   /* ---- musik: lugn, genererad lo-fi-loop ---- */
   let musicTimer = 0, musicGain = null, musicBar = 0;
   const CHORDS = [[220, 261.63, 329.63, 392], [174.61, 220, 261.63, 329.63], [261.63, 329.63, 392, 493.88], [196, 246.94, 293.66, 392]];
@@ -1284,17 +1563,17 @@ const PHYS = (function () {
     $('tray').style.display = (S.rule === 'free' || S.rule === 'clear') ? '' : 'none';
     if (S.mp) $('group').textContent = mpLabel(); else
     if (S.mode !== 'free') $('group').textContent = modeLabel(); else
-    $('group').textContent = S.group ? 'Du spelar ' + P.nameOf(S.group) + (S.group === 'solid' ? ' (1–7)' : ' (9–15)') : 'Öppet bord';
+    $('group').textContent = S.group ? tr('Du spelar {0} ({1})', [nameG(S.group), S.group === 'solid' ? '1–7' : '9–15']) : tr('Öppet bord');
     $('spinfx').textContent = spinFx();
     $('btn-replay').disabled = !S.replay && !(S.lastRec && !S.menu && ['aim', 'place', 'watch'].includes(S.state));
-    $('btn-replay').textContent = S.replay ? '■ Stoppa repris' : '⟲ Repris';
+    $('btn-replay').textContent = S.replay ? tr('■ Stoppa repris') : tr('⟲ Repris');
     $('btn-undo').disabled = !!S.mp || !(S.undo && (S.state === 'aim' || S.state === 'place' || S.over));
     $('btn-new').disabled = !!S.mp;
     $('btn-view').classList.toggle('on', S.top);
     $('btn-guide').classList.toggle('on', S.guide);
     $('btn-sound').classList.toggle('on', S.sound);
     $('shoot').disabled = S.state !== 'aim' && S.state !== 'place';
-    $('shoot').textContent = S.state === 'place' ? 'PLACERA HÄR' : (S.mp && (S.state === 'watch' || S.state === 'roll' || S.state === 'strike') && !(S.mp.iShot && S.mp.seat === S.mp.G.turn) ? 'MOTSTÅNDARENS TUR' : 'SKJUT');
+    $('shoot').textContent = S.state === 'place' ? tr('PLACERA HÄR') : (S.mp && (S.state === 'watch' || S.state === 'roll' || S.state === 'strike') && !(S.mp.iShot && S.mp.seat === S.mp.G.turn) ? tr('MOTSTÅNDARENS TUR') : tr('SKJUT'));
     $('pfill').style.height = (S.power * 100) + '%';
     $('plabel').textContent = Math.round(S.power * 100) + '%';
     $('spindot').style.left = (50 + (S.sa / 0.75) * 40) + '%';
@@ -1327,13 +1606,13 @@ const PHYS = (function () {
       S.state = 'aim'; S.breakPlace = false; S.topBefore = null; S.top = false;
       S.camTarget.set(cue().x, R, cue().z);
       hideModal(); updateHUD();
-      toast(S.rule === 'drill' ? P.DRILLS[S.drill].desc : S.rule === 'streak' ? 'Sänk så många bollar du kan i rad – första missen avslutar.' : 'Sänk bollen! Du har tre försök per runda.', '', 4000);
+      toast(S.rule === 'drill' ? tr(P.DRILLS[S.drill].desc) : S.rule === 'streak' ? tr('Sänk så många bollar du kan i rad – första missen avslutar.') : tr('Sänk bollen! Du har tre försök per runda.'), '', 4000);
       return;
     }
     S.state = 'place'; S.breakPlace = true; S.topBefore = false; S.top = true;
     S.camTarget.set(cue().x, R, cue().z);
     hideModal(); updateHUD();
-    toast(S.rule === 'nine' ? 'Bryt! Träffa alltid lägsta bollen först – nian vinner.' : S.rule === 'straight' ? 'Straight pool till ' + STRAIGHT_TARGET + ' poäng. Bryt racket!' : 'Bryt racket! Placera vita bollen i det markerade området och tryck PLACERA HÄR.', '', 4500);
+    toast(S.rule === 'nine' ? tr('Bryt! Träffa alltid lägsta bollen först – nian vinner.') : S.rule === 'straight' ? tr('Straight pool till {0} poäng. Bryt racket!', [STRAIGHT_TARGET]) : tr('Bryt racket! Placera vita bollen i det markerade området och tryck PLACERA HÄR.'), '', 4500);
   }
 
   /* ---------------- Skott ---------------- */
@@ -1352,7 +1631,7 @@ const PHYS = (function () {
     S.group = u.group; S.shots = u.shots; S.fouls = u.fouls; S.streak = u.streak; S.best = u.best; S.good = u.good;
     S.undo = null; S.over = false; S.state = 'aim'; S.breakPlace = false; S.shot = null; hideModal();
     if (S.topBefore !== null) { S.top = S.topBefore; S.topBefore = null; }
-    updateHUD(); toast('Skottet ångrades.', '', 1800);
+    updateHUD(); toast(tr('Skottet ångrades.'), '', 1800);
   }
 
   function startShot(remote) {
@@ -1370,15 +1649,16 @@ const PHYS = (function () {
   function onEv(type, a, b, v) {
     if (type === 'ball') {
       if ((a.id === 0 || b.id === 0) && S.shot && S.shot.firstHit === null) S.shot.firstHit = (a.id === 0 ? b : a).id;
-      sfx.ball(v);
+      sfx.ball(v, (a.x + b.x) / 2);
     } else if (type === 'cushion') {
       if (S.shot && S.shot.firstHit !== null) S.shot.railAfter = true;
-      sfx.cushion(v);
+      sfx.cushion(v, a.x);
     } else if (type === 'pocket') {
       a.vx = a.vz = a.wx = a.wy = a.wz = 0;
       a.sink = { t: 0, fx: a.x, fz: a.z };
       if (S.shot) S.shot.pocketed.push(a.id);
-      sfx.pocket(v);
+      sfx.pocket(v, a.x);
+      if (P.POCKETS[a.pocket]) potFx(P.POCKETS[a.pocket], a.id === 0);
     }
   }
 
@@ -1397,15 +1677,15 @@ const PHYS = (function () {
 
     if (res.win) {
       S.cleared++; ST.runs++; saveST(); S.over = true; updateHUD();
-      toast('Åttan i hål!', 'good', 2500);
-      showModal('Bordet klarat! 🎱', 'Du klarade bordet på ' + S.shots + ' skott (' + S.fouls + ' foul). Träffprocent: ' + Math.round(100 * S.good / S.shots) + '%.',
-        [{ label: 'Ångra sista skottet', fn: undoShot }, { label: 'Ny rack', primary: true, fn: () => resetRack(true) }]);
+      toast(tr('Åttan i hål!'), 'good', 2500);
+      showModal(tr('Bordet klarat! 🎱'), tr('Du klarade bordet på {0} skott ({1} foul). Träffprocent: {2}%.', [S.shots, S.fouls, Math.round(100 * S.good / S.shots)]),
+        [{ label: tr('Ångra sista skottet'), fn: undoShot }, { label: tr('Ny rack'), primary: true, fn: () => resetRack(true) }]);
       return;
     }
     if (res.loss) {
       S.over = true; updateHUD();
-      showModal('Åttan i hål för tidigt', res.reasons.length ? res.reasons.join(' · ') : 'Åttan sänktes innan din grupp var klar.',
-        [{ label: 'Ångra skottet', fn: undoShot }, { label: 'Ny rack', primary: true, fn: () => resetRack(true) }]);
+      showModal(tr('Åttan i hål för tidigt'), res.reasons.length ? trReasons(res.reasons) : tr('Åttan sänktes innan din grupp var klar.'),
+        [{ label: tr('Ångra skottet'), fn: undoShot }, { label: tr('Ny rack'), primary: true, fn: () => resetRack(true) }]);
       return;
     }
     // vit boll i hål => lägg tillbaka
@@ -1419,13 +1699,13 @@ const PHYS = (function () {
     }
     if (res.ballInHand) {
       enterPlace();
-      toast('Foul: ' + res.reasons.join(' · ') + '. Boll i hand!', 'bad', 4500);
+      toast(tr('Foul: {0}. Boll i hand!', [trReasons(res.reasons)]), 'bad', 4500);
     } else if (res.legalPots > 0) {
-      toast(res.legalPots === 1 ? 'Bra! Fortsätt skjuta.' : res.legalPots + ' bollar i hål – bra!', 'good', 2200);
+      toast(res.legalPots === 1 ? tr('Bra! Fortsätt skjuta.') : tr('{0} bollar i hål – bra!', [res.legalPots]), 'good', 2200);
     } else {
-      toast('Ingen boll i hål.', '', 1800);
+      toast(tr('Ingen boll i hål.'), '', 1800);
     }
-    if (!hadGroup && S.group) setTimeout(() => toast('Du spelar ' + P.nameOf(S.group) + ' bollar.', 'good', 2600), res.ballInHand ? 4600 : 2300);
+    if (!hadGroup && S.group) setTimeout(() => toast(tr('Du spelar {0} bollar.', [nameG(S.group)]), 'good', 2600), res.ballInHand ? 4600 : 2300);
     S.camTarget.set(c.x, R, c.z);
     updateHUD();
   }
@@ -1438,7 +1718,7 @@ const PHYS = (function () {
   function placeValid() { const c = cue(); return P.legalPlacement(S.balls, c.x, c.z) && (!S.breakPlace || c.x <= -HX / 2 + 0.01); }
   function confirmPlace() {
     if (S.state !== 'place' || S.over) return;
-    if (!placeValid()) { toast('Ogiltig placering – ligger för nära en annan boll.', 'bad', 1800); return; }
+    if (!placeValid()) { toast(tr('Ogiltig placering – ligger för nära en annan boll.'), 'bad', 1800); return; }
     S.state = 'aim'; S.breakPlace = false;
     if (S.topBefore !== null) { S.top = S.topBefore; S.topBefore = null; }
     S.camTarget.set(cue().x, R, cue().z);
@@ -1649,15 +1929,24 @@ const PHYS = (function () {
     if (S.state !== 'replay') for (const b of S.balls) {
       const m = meshes[b.id], bl = blobs[b.id];
       if (b.sink) {
-        b.sink.t += dt / 0.4;
-        const k = Math.min(1, b.sink.t), e = k * k, pk = P.POCKETS[b.pocket];
-        m.position.set(b.sink.fx + (pk.x - b.sink.fx) * e, R - e * (2 * R + 4), b.sink.fz + (pk.z - b.sink.fz) * e);
+        b.sink.t += dt / 0.6;
+        const k = Math.min(1, b.sink.t), pk = P.POCKETS[b.pocket];
+        const kA = 0.3;
+        if (k < kA) {
+          const u = k / kA, e = u * u * (3 - 2 * u);
+          m.position.set(b.sink.fx + (pk.x - b.sink.fx) * e, R * (1 - 0.12 * e), b.sink.fz + (pk.z - b.sink.fz) * e);
+          m.scale.setScalar(1);
+        } else {
+          const u = (k - kA) / (1 - kA), e = u * u;
+          m.position.set(pk.x, R * 0.88 - e * (3 * R + 6), pk.z);
+          m.scale.setScalar(1 - 0.28 * u);
+        }
         bl.visible = false;
         if (k >= 1) { m.visible = false; b.sink = null; updateHUD(); }
         continue;
       }
       if (b.out) { m.visible = false; bl.visible = false; continue; }
-      m.visible = true; bl.visible = true;
+      m.visible = true; bl.visible = true; if (m.scale.x !== 1) m.scale.setScalar(1);
       m.position.set(b.x, R, b.z);
       bl.position.x = b.x; bl.position.z = b.z;
       if (simT > 0) {
@@ -1666,6 +1955,7 @@ const PHYS = (function () {
       }
     }
 
+    fxUpdate(dt);
     if (S.state === 'roll') recFrame(dt);
 
     // markör vid placering
@@ -1871,7 +2161,7 @@ const PHYS = (function () {
     { id: 'clear', name: 'Rensa bordet', desc: 'Sänk alla 15 bollar på så få skott som möjligt. Vit boll i hål ger +1 skott.' },
     { id: 'oneball', name: 'Träna på en boll', desc: '10 rundor med en boll åt gången. Tre försök per boll.' },
     { id: 'nine', name: '9-ball', desc: 'Träffa alltid lägsta bollen först och sänk nian. Så få skott som möjligt.' },
-    { id: 'straight', name: 'Straight pool', desc: 'Valfri boll i valfri ficka: +1 per boll, −1 för foul. Spela till ' + STRAIGHT_TARGET + ' poäng, racket fylls på automatiskt.' }
+    { id: 'straight', name: 'Straight pool', desc: 'Valfri boll i valfri ficka: +1 per boll, −1 för foul. Spela till {0} poäng, racket fylls på automatiskt.' }
   ];
   const CHALS = [
     { id: 'c1', name: 'Rakt på', desc: 'Sänk bollen rakt i hörnfickan.', kind: 'drill', drill: 0, stars: [1, 2, 4], unit: 'skott' },
@@ -1903,25 +2193,25 @@ const PHYS = (function () {
   function saveGhost() { if (!GHOSTED.includes(S.rule)) return; const g = getGhost(); if (!g || S.shots < g.n) { try { localStorage.setItem(ghostKey(), JSON.stringify({ n: S.shots, log: S.runLog.slice(0, 80) })); } catch (_) { } } }
   function ghostTxt() {
     const g = S.ghost; if (!g) return '';
-    if (S.shots === 0) return ' · Spöke: ' + g.n + ' skott';
+    if (S.shots === 0) return tr(' · Spöke: {0} skott', [g.n]);
     const v = g.log[Math.min(S.shots, g.log.length) - 1];
-    return ' · Spöke: ' + (v === undefined ? 0 : v) + ' kvar';
+    return tr(' · Spöke: {0} kvar', [v === undefined ? 0 : v]);
   }
   function objectsLeft() { return S.balls.filter(b => b.id > 0 && !b.out).length; }
   function lowestBall() { let m = 99; for (const b of S.balls) if (b.id > 0 && !b.out && b.id < m) m = b.id; return m; }
   function modeLabel() {
-    const pre = S.mode === 'chal' ? S.chal.name + ' · ' : '';
+    const pre = S.mode === 'chal' ? tr(S.chal.name) + ' · ' : '';
     switch (S.rule) {
-      case 'clear': return 'Rensa bordet · ' + objectsLeft() + ' kvar' + ghostTxt();
-      case 'drill': return pre + P.DRILLS[S.drill].name + ' · ' + objectsLeft() + ' kvar' + ghostTxt();
-      case 'oneball': return pre + 'Runda ' + Math.min(S.round, 10) + '/10 · Poäng ' + S.score + ' · Försök ' + Math.min(S.attempts + 1, 3) + '/3';
-      case 'nine': return pre + '9-ball · lägsta: ' + lowestBall() + ' · ' + objectsLeft() + ' kvar' + ghostTxt();
-      case 'straight': return 'Straight pool · ' + S.score + ' / ' + STRAIGHT_TARGET + ' poäng · ' + objectsLeft() + ' kvar';
-      case 'streak': return pre + 'Serie: ' + S.streak + ' i rad · ' + objectsLeft() + ' kvar';
+      case 'clear': return tr('Rensa bordet · {0} kvar', [objectsLeft()]) + ghostTxt();
+      case 'drill': return pre + tr(P.DRILLS[S.drill].name) + ' · ' + tr('{0} kvar', [objectsLeft()]) + ghostTxt();
+      case 'oneball': return pre + tr('Runda {0}/10 · Poäng {1} · Försök {2}/3', [Math.min(S.round, 10), S.score, Math.min(S.attempts + 1, 3)]);
+      case 'nine': return pre + tr('9-ball · lägsta: {0} · {1} kvar', [lowestBall(), objectsLeft()]) + ghostTxt();
+      case 'straight': return tr('Straight pool · {0} / {1} poäng · {2} kvar', [S.score, STRAIGHT_TARGET, objectsLeft()]);
+      case 'streak': return pre + tr('Serie: {0} i rad · {1} kvar', [S.streak, objectsLeft()]);
     }
     return '';
   }
-  function modeName() { return S.mode === 'chal' ? 'Utmaning: ' + S.chal.name : S.mode === 'drill' ? P.DRILLS[S.drill].name : MODES.find(m => m.id === S.mode).name; }
+  function modeName() { return S.mode === 'chal' ? tr('Utmaning: {0}', [tr(S.chal.name)]) : S.mode === 'drill' ? tr(P.DRILLS[S.drill].name) : tr(MODES.find(m => m.id === S.mode).name); }
   function clearTable(keep) {
     for (const b of S.balls) { b.out = b.id !== 0 && !keep.includes(b.id); b.vx = b.vz = b.wx = b.wy = b.wz = 0; b.sink = null; b.pocket = undefined; }
   }
@@ -1976,9 +2266,9 @@ const PHYS = (function () {
   function modeDone(title, text) {
     S.over = true; updateHUD();
     showModal(title, text, [
-      { label: 'Ångra sista skottet', fn: undoShot },
-      { label: 'Meny', fn: () => { resetRack(true); openMenu(); } },
-      { label: 'Spela igen', primary: true, fn: () => resetRack(true) }
+      { label: tr('Ångra sista skottet'), fn: undoShot },
+      { label: tr('Meny'), fn: () => { resetRack(true); openMenu(); } },
+      { label: tr('Spela igen'), primary: true, fn: () => resetRack(true) }
     ]);
   }
   function chalFinish(v) {
@@ -1988,8 +2278,8 @@ const PHYS = (function () {
     S.over = true; updateHUD();
     const idx = CHALS.indexOf(c), next = CHALS[idx + 1] && n >= 1;
     const [a, b, d] = c.stars;
-    showModal(n ? starTxt(n) + ' Klarat!' : 'Inte riktigt…', v + ' ' + c.unit + '. ' + (c.higher ? '3 stjärnor: ' + a + '+, 2: ' + b + '+, 1: ' + d + '+.' : '3 stjärnor: ≤' + a + ', 2: ≤' + b + ', 1: ≤' + d + '.'),
-      [{ label: 'Utmaningar', fn: () => { hideModal(); openMenu(); showSub('chal'); } }, { label: 'Försök igen', primary: !next, fn: () => resetRack(true) }].concat(next ? [{ label: 'Nästa utmaning', primary: true, fn: () => setMode('chal', idx + 1) }] : []));
+    showModal(n ? starTxt(n) + ' ' + tr('Klarat!') : tr('Inte riktigt…'), v + ' ' + tr(c.unit) + '. ' + (c.higher ? tr('3 stjärnor: {0}+, 2: {1}+, 1: {2}+.', [a, b, d]) : tr('3 stjärnor: ≤{0}, 2: ≤{1}, 1: ≤{2}.', [a, b, d])),
+      [{ label: tr('Utmaningar'), fn: () => { hideModal(); openMenu(); showSub('chal'); } }, { label: tr('Försök igen'), primary: !next, fn: () => resetRack(true) }].concat(next ? [{ label: tr('Nästa utmaning'), primary: true, fn: () => setMode('chal', idx + 1) }] : []));
   }
   function finishRun(value, title, text) {
     if (S.mode === 'chal') { chalFinish(value); return; }
@@ -2022,47 +2312,47 @@ const PHYS = (function () {
     let newLayout = false;
     const hand = (rule === 'nine' || rule === 'straight') ? foul : cueIn;
     if (rule === 'oneball') {
-      if (good) { S.score++; S.round++; S.attempts = 0; newLayout = true; toast('Bra! Boll i hål.', 'good', 1800); }
-      else { S.attempts++; if (S.attempts >= 3) { S.round++; S.attempts = 0; newLayout = true; toast('Inga försök kvar – nästa runda.', 'bad', 2000); } else toast(cueIn ? 'Vita bollen i hål.' : 'Miss. Försök igen.', cueIn ? 'bad' : '', 1800); }
+      if (good) { S.score++; S.round++; S.attempts = 0; newLayout = true; toast(tr('Bra! Boll i hål.'), 'good', 1800); }
+      else { S.attempts++; if (S.attempts >= 3) { S.round++; S.attempts = 0; newLayout = true; toast(tr('Inga försök kvar – nästa runda.'), 'bad', 2000); } else toast(cueIn ? tr('Vita bollen i hål.') : tr('Miss. Försök igen.'), cueIn ? 'bad' : '', 1800); }
       if (S.round > 10) {
         if (S.mode === 'chal') { chalFinish(S.score); return; }
         const nb = setBest('oneball', 0, S.score, true), b = getBest('oneball', 0);
-        finishRun(S.score, 'Klart! ' + S.score + ' / 10', (nb ? 'Nytt rekord!' : 'Ditt rekord: ' + b + ' / 10.') + ' Träffprocent: ' + Math.round(100 * S.good / S.shots) + '%.');
+        finishRun(S.score, tr('Klart! {0} / 10', [S.score]), (nb ? tr('Nytt rekord!') : tr('Ditt rekord: {0} / 10.', [b])) + ' ' + tr('Träffprocent: {0}%.', [Math.round(100 * S.good / S.shots)]));
         return;
       }
       if (newLayout) spawnOneBall();
     } else if (rule === 'streak') {
       const fin = good ? S.streak : runStreak;
       if (!good || objectsLeft() === 0) { chalFinish(fin); return; }
-      toast(S.streak + ' i rad – fortsätt!', 'good', 1500);
+      toast(tr('{0} i rad – fortsätt!', [S.streak]), 'good', 1500);
     } else if (rule === 'nine') {
       if (ev.win) {
         const nb = setBest('nine', 0, S.shots, false), b = getBest('nine', 0);
-        finishRun(S.shots, 'Niaren i hål på ' + S.shots + ' skott!', (nb ? 'Nytt rekord! ' : 'Ditt rekord: ' + b + ' skott. ') + (S.fouls ? S.fouls + ' foul.' : 'Utan foul.'));
+        finishRun(S.shots, tr('Niaren i hål på {0} skott!', [S.shots]), (nb ? tr('Nytt rekord!') + ' ' : tr('Ditt rekord: {0} skott.', [b]) + ' ') + (S.fouls ? tr('{0} foul.', [S.fouls]) : tr('Utan foul.')));
         return;
       }
-      if (foul) toast('Foul: ' + reasons.join(' · ') + '. Boll i hand!' + (ev.respot9 ? ' Nian läggs tillbaka.' : ''), 'bad', 4500);
-      else toast(good ? pot.length + (pot.length === 1 ? ' boll i hål – ' : ' bollar i hål – ') + 'fortsätt!' : 'Ingen boll i hål.', good ? 'good' : '', 2000);
+      if (foul) toast(tr('Foul: {0}. Boll i hand!', [trReasons(reasons)]) + (ev.respot9 ? ' ' + tr('Nian läggs tillbaka.') : ''), 'bad', 4500);
+      else toast(good ? trn(pot.length, '1 boll i hål – fortsätt!', '{0} bollar i hål – fortsätt!') : tr('Ingen boll i hål.'), good ? 'good' : '', 2000);
     } else if (rule === 'straight') {
       if (S.score >= STRAIGHT_TARGET) {
         const nb = setBest('straight', 0, S.shots, false), b = getBest('straight', 0);
-        finishRun(S.shots, STRAIGHT_TARGET + ' poäng på ' + S.shots + ' skott!', (nb ? 'Nytt rekord! ' : 'Ditt rekord: ' + b + ' skott. ') + S.fouls + ' foul.');
+        finishRun(S.shots, tr('{0} poäng på {1} skott!', [STRAIGHT_TARGET, S.shots]), (nb ? tr('Nytt rekord!') + ' ' : tr('Ditt rekord: {0} skott.', [b]) + ' ') + tr('{0} foul.', [S.fouls]));
         return;
       }
-      if (objectsLeft() <= 1) { rerackStraight(); toast('Nytt rack!', 'good', 2200); }
-      else if (foul) toast('Foul: ' + reasons.join(' · ') + '. −1 poäng, boll i hand.', 'bad', 3500);
-      else toast(good ? '+' + ev.points + (ev.points === 1 ? ' poäng' : ' poäng') : 'Ingen boll i hål.', good ? 'good' : '', 1800);
+      if (objectsLeft() <= 1) { rerackStraight(); toast(tr('Nytt rack!'), 'good', 2200); }
+      else if (foul) toast(tr('Foul: {0}. −1 poäng, boll i hand.', [trReasons(reasons)]), 'bad', 3500);
+      else toast(good ? tr('+{0} poäng', [ev.points]) : tr('Ingen boll i hål.'), good ? 'good' : '', 1800);
     } else if (objectsLeft() === 0) {
       if (S.mode !== 'chal') {
         if (rule === 'clear') S.cleared++;
         const nb = setBest(S.mode, S.drill, S.shots, false), b = getBest(S.mode, S.drill);
-        finishRun(S.shots, 'Klarat på ' + S.shots + ' skott', (nb ? 'Nytt rekord! ' : 'Ditt rekord: ' + b + ' skott. ') + (S.fouls ? S.fouls + ' foul (+1 skott var).' : 'Utan foul.'));
+        finishRun(S.shots, tr('Klarat på {0} skott', [S.shots]), (nb ? tr('Nytt rekord!') + ' ' : tr('Ditt rekord: {0} skott.', [b]) + ' ') + (S.fouls ? tr('{0} foul (+1 skott var).', [S.fouls]) : tr('Utan foul.')));
       } else chalFinish(S.shots);
       return;
     } else if (!cueIn) {
-      toast(good ? (pot.length + (pot.length === 1 ? ' boll i hål – ' : ' bollar i hål – ') + objectsLeft() + ' kvar.') : 'Ingen boll i hål.', good ? 'good' : '', 2000);
+      toast(good ? trn(pot.length, '1 boll i hål – {1} kvar.', '{0} bollar i hål – {1} kvar.').replace('{1}', objectsLeft()) : tr('Ingen boll i hål.'), good ? 'good' : '', 2000);
     }
-    if (hand && !newLayout && rule !== 'streak') { enterPlace(); if (rule !== 'nine' && rule !== 'straight') toast('Vita bollen i hål – boll i hand!' + (penalty ? ' (+1 skott)' : ''), 'bad', 3500); }
+    if (hand && !newLayout && rule !== 'streak') { enterPlace(); if (rule !== 'nine' && rule !== 'straight') toast(tr('Vita bollen i hål – boll i hand!') + (penalty ? ' ' + tr('(+1 skott)') : ''), 'bad', 3500); }
     S.camTarget.set(cue().x, R, cue().z);
     updateHUD();
   }
@@ -2083,44 +2373,44 @@ const PHYS = (function () {
     }
     for (const m of MODES) {
       const bv = m.id === 'free' ? null : getBest(m.id, 0);
-      card(m.name, m.desc, bv === null ? '' : (m.id === 'oneball' ? 'Rekord ' + bv + '/10' : 'Rekord ' + bv + ' skott'), () => setMode(m.id, 0));
+      card(tr(m.name), tr(m.desc, [STRAIGHT_TARGET]), bv === null ? '' : (m.id === 'oneball' ? tr('Rekord {0}/10', [bv]) : tr('Rekord {0} skott', [bv])), () => setMode(m.id, 0));
     }
-    const h = document.createElement('h3'); h.textContent = 'Övningsuppställningar'; wrap.appendChild(h);
+    const h = document.createElement('h3'); h.textContent = tr('Övningsuppställningar'); wrap.appendChild(h);
     const grid = document.createElement('div'); grid.className = 'mgrid'; wrap.appendChild(grid);
-    P.DRILLS.forEach((d, i) => { const bv = getBest('drill', i); card(d.name, d.desc, bv === null ? '' : 'Rekord ' + bv, () => setMode('drill', i), grid); });
+    P.DRILLS.forEach((d, i) => { const bv = getBest('drill', i); card(tr(d.name), tr(d.desc), bv === null ? '' : tr('Rekord {0}', [bv]), () => setMode('drill', i), grid); });
   }
   function buildChalUI() {
     const wrap = $('challist'); wrap.innerHTML = '';
     let tot = 0; CHALS.forEach((_, i) => tot += chalStars(i));
-    $('chal-total').textContent = 'Stjärnor: ' + tot + ' / ' + CHALS.length * 3 + '. Klara en utmaning med minst en stjärna för att låsa upp nästa.';
+    $('chal-total').textContent = tr('Stjärnor: {0} / {1}. Klara en utmaning med minst en stjärna för att låsa upp nästa.', [tot, CHALS.length * 3]);
     CHALS.forEach((c, i) => {
       const open = chalUnlocked(i), n = chalStars(i);
       const b = document.createElement('button'); b.className = 'mcard'; b.disabled = !open;
       if (!open) b.style.opacity = '.45';
-      const bt = document.createElement('b'); bt.textContent = (open ? '' : '🔒 ') + (i + 1) + '. ' + c.name;
+      const bt = document.createElement('b'); bt.textContent = (open ? '' : '🔒 ') + (i + 1) + '. ' + tr(c.name);
       const em = document.createElement('em'); em.textContent = starTxt(n); bt.appendChild(em);
-      const sp = document.createElement('span'); sp.textContent = c.desc + ' (' + (c.higher ? '3★ ≥ ' : '3★ ≤ ') + c.stars[0] + ' ' + c.unit + ')';
+      const sp = document.createElement('span'); sp.textContent = tr(c.desc) + ' (' + (c.higher ? '3★ ≥ ' : '3★ ≤ ') + c.stars[0] + ' ' + tr(c.unit) + ')';
       b.appendChild(bt); b.appendChild(sp); b.onclick = () => setMode('chal', i); wrap.appendChild(b);
     });
   }
   function spinFx() {
     const a = S.sa, b = S.sb, f = [];
-    if (b > 0.2) f.push('Följ: vita rullar framåt efter träffen'); else if (b < -0.2) f.push('Back: vita drar tillbaka efter träffen');
-    if (a > 0.2) f.push('Högereffekt: styr åt höger vid kudden'); else if (a < -0.2) f.push('Vänstereffekt: styr åt vänster vid kudden');
-    return f.length ? f.join(' · ') : 'Mitten: ren träff';
+    if (b > 0.2) f.push(tr('Följ: vita rullar framåt efter träffen')); else if (b < -0.2) f.push(tr('Back: vita drar tillbaka efter träffen'));
+    if (a > 0.2) f.push(tr('Högereffekt: styr åt höger vid kudden')); else if (a < -0.2) f.push(tr('Vänstereffekt: styr åt vänster vid kudden'));
+    return f.length ? f.join(' · ') : tr('Mitten: ren träff');
   }
   let statArm = false;
   function buildStatsUI() {
-    const wrap = $('statlist'); wrap.innerHTML = ''; statArm = false; $('stat-reset').textContent = 'Nollställ statistik';
+    const wrap = $('statlist'); wrap.innerHTML = ''; statArm = false; $('stat-reset').textContent = tr('Nollställ statistik');
     let tot = 0; CHALS.forEach((_, i) => tot += chalStars(i));
     const rows = [
-      ['Skott totalt', ST.shots], ['Bollar sänkta', ST.pots], ['Träffprocent', ST.shots ? Math.round(100 * ST.pots / ST.shots) + '%' : '–'],
-      ['Foul', ST.fouls], ['Längsta serie', ST.bestStreak], ['Klarade banor och bord', ST.runs],
-      ['Online: spelade matcher', ST.mpPlayed], ['Online: vunna', ST.mpWon], ['Utmaningsstjärnor', tot + ' / ' + CHALS.length * 3]
+      [tr('Skott totalt'), ST.shots], [tr('Bollar sänkta'), ST.pots], [tr('Träffprocent'), ST.shots ? Math.round(100 * ST.pots / ST.shots) + '%' : '–'],
+      [tr('Foul'), ST.fouls], [tr('Längsta serie'), ST.bestStreak], [tr('Klarade banor och bord'), ST.runs],
+      [tr('Online: spelade matcher'), ST.mpPlayed], [tr('Online: vunna'), ST.mpWon], [tr('Utmaningsstjärnor'), tot + ' / ' + CHALS.length * 3]
     ];
-    const rec = [['Rensa bordet', getBest('clear', 0), 'skott'], ['9-ball', getBest('nine', 0), 'skott'], ['Straight pool (' + STRAIGHT_TARGET + ')', getBest('straight', 0), 'skott'], ['Träna på en boll', getBest('oneball', 0), '/ 10']];
+    const rec = [[tr('Rensa bordet'), getBest('clear', 0), tr('skott')], ['9-ball', getBest('nine', 0), tr('skott')], ['Straight pool (' + STRAIGHT_TARGET + ')', getBest('straight', 0), tr('skott')], [tr('Träna på en boll'), getBest('oneball', 0), '/ 10']];
     rows.forEach(([k, v]) => { const d = document.createElement('div'); d.className = 'strow'; const a = document.createElement('span'); a.textContent = k; const b = document.createElement('b'); b.textContent = v; d.appendChild(a); d.appendChild(b); wrap.appendChild(d); });
-    const h = document.createElement('h3'); h.textContent = 'Personliga rekord'; wrap.appendChild(h);
+    const h = document.createElement('h3'); h.textContent = tr('Personliga rekord'); wrap.appendChild(h);
     rec.forEach(([k, v, u]) => { const d = document.createElement('div'); d.className = 'strow'; const a = document.createElement('span'); a.textContent = k; const b = document.createElement('b'); b.textContent = v === null ? '–' : v + ' ' + u; d.appendChild(a); d.appendChild(b); wrap.appendChild(d); });
   }
 
@@ -2133,7 +2423,7 @@ const PHYS = (function () {
   function mpStatus(msg, code) {
     const el = $('mp-status'); el.textContent = '';
     if (code) {
-      const a = document.createElement('div'); a.textContent = 'Rumskod:'; el.appendChild(a);
+      const a = document.createElement('div'); a.textContent = tr('Rumskod:'); el.appendChild(a);
       const c = document.createElement('div'); c.className = 'code'; c.textContent = code.toUpperCase(); el.appendChild(c);
     }
     const m = document.createElement('div'); m.textContent = msg; el.appendChild(m);
@@ -2142,9 +2432,9 @@ const PHYS = (function () {
   function mpPresent(label) { return mpViewers().some(p => p.peer === label); }
   function mpNameOf(label) {
     const p = S.mp && S.mp.room.peers().find(q => q.peer === label);
-    return (p && p.presence && typeof p.presence.nm === 'string' && mpClean(p.presence.nm)) || 'Motspelare';
+    return (p && p.presence && typeof p.presence.nm === 'string' && mpClean(p.presence.nm)) || tr('Motspelare');
   }
-  function mpSeatName(seat) { const G = S.mp.G; return G.players[seat] === S.mp.me ? 'Du' : mpNameOf(G.players[seat]); }
+  function mpSeatName(seat) { const G = S.mp.G; return G.players[seat] === S.mp.me ? tr('Du') : mpNameOf(G.players[seat]); }
   function mpMyTurn() { return !!(S.mp && S.mp.G && S.mp.seat >= 0 && S.mp.seat === S.mp.G.turn); }
   function mpOwner() {
     const G = S.mp.G; if (!G) return false;
@@ -2153,12 +2443,12 @@ const PHYS = (function () {
   }
   function mpLabel() {
     const mp = S.mp, G = mp.G;
-    if (!G) return 'Väntar på motspelare…';
+    if (!G) return tr('Väntar på motspelare…');
     const sc = G.score && (G.score[0] + G.score[1] > 0) ? ' · ' + (mp.seat < 0 ? G.score[0] + '–' + G.score[1] : G.score[mp.seat] + '–' + G.score[1 - mp.seat]) : '';
-    const turn = mp.seat < 0 ? mpNameOf(G.players[G.turn]) + 's tur' : (mpMyTurn() ? 'DIN TUR' : mpNameOf(G.players[G.turn]).toUpperCase() + 'S TUR');
+    const turn = mp.seat < 0 ? tr('{0}s tur', [mpNameOf(G.players[G.turn])]) : (mpMyTurn() ? tr('DIN TUR') : tr('{0}S TUR', [mpNameOf(G.players[G.turn]).toUpperCase()]));
     const opp = mp.seat >= 0 ? G.players[1 - mp.seat] : null;
-    const gone = opp && !mpPresent(opp) ? ' · motspelaren frånkopplad' : '';
-    const grp = S.group ? ' · du: ' + P.nameOf(S.group) : (mp.seat >= 0 ? ' · öppet bord' : '');
+    const gone = opp && !mpPresent(opp) ? tr(' · motspelaren frånkopplad') : '';
+    const grp = S.group ? tr(' · du: {0}', [nameG(S.group)]) : (mp.seat >= 0 ? tr(' · öppet bord') : '');
     return turn + grp + sc + gone;
   }
   const ballsOut = () => S.balls.map(b => [+b.x.toFixed(2), +b.z.toFixed(2), b.out ? 1 : 0]);
@@ -2174,11 +2464,11 @@ const PHYS = (function () {
   function mpEvText(G) {
     const ev = G.ev; if (!ev) return '';
     const mine = ev.by === S.mp.seat, who = mpSeatName(ev.by), opp = mpSeatName(1 - ev.by);
-    const r = (ev.r || []).join(' · ');
-    if (ev.k === 'pot') return mine ? 'Bra! Du sänkte ' + ev.c + (ev.c === 1 ? ' boll' : ' bollar') + '. Fortsätt!' : who + ' sänkte ' + ev.c + (ev.c === 1 ? ' boll' : ' bollar') + ' och fortsätter.';
-    if (ev.k === 'miss') return mine ? 'Ingen boll i hål. Nu skjuter ' + opp + '.' : who + ' missade. Din tur!';
-    if (ev.k === 'foul') return mine ? 'Foul: ' + r + '. ' + opp + ' får boll i hand.' : who + ' gjorde foul: ' + r + '. Du får boll i hand!';
-    if (ev.k === 'timeout') return mine ? 'Tiden tog slut! ' + opp + ' får boll i hand.' : who + ' hann inte skjuta. Du får boll i hand!';
+    const r = trReasons(ev.r || []);
+    if (ev.k === 'pot') return mine ? trn(ev.c, 'Bra! Du sänkte 1 boll. Fortsätt!', 'Bra! Du sänkte {0} bollar. Fortsätt!') : trn(ev.c, '{1} sänkte 1 boll och fortsätter.', '{1} sänkte {0} bollar och fortsätter.').replace('{1}', who);
+    if (ev.k === 'miss') return mine ? tr('Ingen boll i hål. Nu skjuter {0}.', [opp]) : tr('{0} missade. Din tur!', [who]);
+    if (ev.k === 'foul') return mine ? tr('Foul: {0}. {1} får boll i hand.', [r, opp]) : tr('{0} gjorde foul: {1}. Du får boll i hand!', [who, r]);
+    if (ev.k === 'timeout') return mine ? tr('Tiden tog slut! {0} får boll i hand.', [opp]) : tr('{0} hann inte skjuta. Du får boll i hand!', [who]);
     if (ev.k === 'start') return '';
     return '';
   }
@@ -2205,8 +2495,12 @@ const PHYS = (function () {
       if (mp.seat >= 0 && mp.cnt !== G.e) { mp.cnt = G.e; ST.mpPlayed++; if (G.over.w === mp.seat) ST.mpWon++; saveST(); }
       S.over = true; S.state = 'watch';
       const winner = G.over.w === mp.seat;
-      const title = mp.seat < 0 ? mpNameOf(G.players[G.over.w]) + ' vann' : (winner ? 'Du vann! 🎱' : mpNameOf(G.players[G.over.w]) + ' vann');
-      showModal(title, (G.over.t || '') + (G.score ? ' Ställning: ' + (mp.seat >= 0 ? G.score[mp.seat] + '–' + G.score[1 - mp.seat] : G.score[0] + '–' + G.score[1]) + '.' : ''), [{ label: 'Lämna rummet', fn: () => mpLeave(false) }].concat(mp.seat >= 0 ? [{ label: 'Spela igen', primary: true, fn: mpRematch }] : []));
+      const title = mp.seat < 0 ? tr('{0} vann', [mpNameOf(G.players[G.over.w])]) : (winner ? tr('Du vann! 🎱') : tr('{0} vann', [mpNameOf(G.players[G.over.w])]));
+      const ov = G.over, rs = trReasons(ov.r || []), rtxt = rs ? ' (' + rs + ')' : '';
+      let otxt = '';
+      if (ov.k === 'win') otxt = ov.w === mp.seat ? tr('Du sänkte åttan efter {0} skott.', [G.n]) : tr('{0} sänkte åttan efter {1} skott.', [mpNameOf(G.players[ov.w]), G.n]);
+      else otxt = ov.w !== mp.seat ? tr('Du sänkte åttan för tidigt{0}.', [rtxt]) : tr('{0} sänkte åttan för tidigt{1}.', [mpNameOf(G.players[1 - ov.w]), rtxt]);
+      showModal(title, otxt + (G.score ? ' ' + tr('Ställning: {0}.', [mp.seat >= 0 ? G.score[mp.seat] + '–' + G.score[1 - mp.seat] : G.score[0] + '–' + G.score[1]]) : ''), [{ label: tr('Lämna rummet'), fn: () => mpLeave(false) }].concat(mp.seat >= 0 ? [{ label: tr('Spela igen'), primary: true, fn: mpRematch }] : []));
       updateHUD(); return;
     }
     const mine = mp.seat >= 0 && mp.seat === G.turn;
@@ -2227,8 +2521,8 @@ const PHYS = (function () {
     S.camTarget.set(cue().x, R, cue().z); S.camYaw = S.aim;
     const tx = mpEvText(G);
     if (tx) toast(tx, G.ev.k === 'foul' ? (G.ev.by === mp.seat ? 'bad' : 'good') : (G.ev.k === 'pot' && G.ev.by === mp.seat ? 'good' : ''), 4200);
-    else if (G.n === 0 && mine) toast('Du bryter! Placera vita bollen bakom linjen och tryck PLACERA HÄR.', '', 4500);
-    else if (G.n === 0) toast(mpNameOf(G.players[G.turn]) + ' bryter.', '', 3000);
+    else if (G.n === 0 && mine) toast(tr('Du bryter! Placera vita bollen bakom linjen och tryck PLACERA HÄR.'), '', 4500);
+    else if (G.n === 0) toast(tr('{0} bryter.', [mpNameOf(G.players[G.turn])]), '', 3000);
     updateHUD();
   }
   function mpNewRack(e, players, turn, clock, score) {
@@ -2261,8 +2555,8 @@ const PHYS = (function () {
     if (!G.groups[seat] && res.newGroup) { ng.groups[seat] = res.newGroup; ng.groups[1 - seat] = res.newGroup === 'solid' ? 'stripe' : 'solid'; }
     ng.n = G.n + 1; ng.brk = false; ng.hand = false; ng.over = null; ng.score = (G.score || [0, 0]).slice();
     const nm = mpSeatName(seat);
-    if (res.win) { ng.over = { w: seat, t: (seat === mp.seat ? 'Du sänkte åttan' : mpSeatName(seat) + ' sänkte åttan') + ' efter ' + ng.n + ' skott.' }; ng.ev = { k: 'win', by: seat }; }
-    else if (res.loss) { ng.over = { w: 1 - seat, t: nm + ' sänkte åttan för tidigt' + (res.reasons.length ? ' (' + res.reasons.join(' · ') + ')' : '') + '.' }; ng.ev = { k: 'loss', by: seat }; }
+    if (res.win) { ng.over = { w: seat, k: 'win' }; ng.ev = { k: 'win', by: seat }; }
+    else if (res.loss) { ng.over = { w: 1 - seat, k: 'loss', r: res.reasons }; ng.ev = { k: 'loss', by: seat }; }
     else if (res.foul) { ng.turn = 1 - seat; ng.hand = true; ng.ev = { k: 'foul', by: seat, r: res.reasons }; }
     else if (res.legalPots > 0) { ng.turn = seat; ng.ev = { k: 'pot', by: seat, c: res.legalPots }; }
     else { ng.turn = 1 - seat; ng.ev = { k: 'miss', by: seat }; }
@@ -2295,7 +2589,7 @@ const PHYS = (function () {
     if (S.state === 'roll' || S.state === 'strike') { mp.turnStart = performance.now(); el.style.display = 'none'; return; }
     const left = G.clock - (performance.now() - mp.turnStart) / 1000;
     el.style.display = '';
-    el.textContent = '⏱ ' + Math.max(0, Math.ceil(left)) + ' s · ' + (mpMyTurn() ? 'din tur' : mpNameOf(G.players[G.turn]));
+    el.textContent = '⏱ ' + Math.max(0, Math.ceil(left)) + ' s · ' + (mpMyTurn() ? tr('din tur') : mpNameOf(G.players[G.turn]));
     el.classList.toggle('low', left < 10);
     if (mpMyTurn() && left <= 0) mpTimeout();
     else if (!mpMyTurn() && left <= -10) mpTimeout();
@@ -2331,9 +2625,9 @@ const PHYS = (function () {
     mpEmit('mp.chat', { s: txt });
     chatShow('Du', txt, /^\p{Extended_Pictographic}{1,3}$/u.test(txt));
   }
+  function buildChatQ() { const q = $('chat-q'); q.innerHTML = ''; CHAT_Q.forEach(s => { const b = document.createElement('button'); b.textContent = tr(s); b.onclick = () => chatSend(tr(s)); q.appendChild(b); }); }
   (function buildChat() {
-    const q = $('chat-q');
-    CHAT_Q.forEach(s => { const b = document.createElement('button'); b.textContent = s; b.onclick = () => chatSend(s); q.appendChild(b); });
+    buildChatQ();
     $('chat-in').addEventListener('keydown', e => {
       e.stopPropagation();
       if (e.key === 'Enter') { chatSend($('chat-in').value); $('chat-in').value = ''; }
@@ -2351,7 +2645,7 @@ const PHYS = (function () {
         const other = viewers.find(p => p.peer !== mp.me);
         const g = mpNewRack(1, [mp.me, other.peer], 0, mp.clock0 || 0, [0, 0]);
         mpEmit('mp.state', g); mpApply(g); startPlay();
-      } else if (mp.host) mpStatus('Väntar på att din vän går med…', mp.code);
+      } else if (mp.host) mpStatus(tr('Väntar på att din vän går med…'), mp.code);
       return;
     }
     const G = mp.G;
@@ -2366,20 +2660,20 @@ const PHYS = (function () {
       }
     }
     updateHUD();
-    if (ch && ch.left && ch.left.some(p => G.players.includes(p.peer) && p.peer !== mp.me)) toast('Motspelaren lämnade rummet. Väntar på att hen kommer tillbaka…', 'bad', 4000);
+    if (ch && ch.left && ch.left.some(p => G.players.includes(p.peer) && p.peer !== mp.me)) toast(tr('Motspelaren lämnade rummet. Väntar på att hen kommer tillbaka…'), 'bad', 4000);
   }
   async function mpJoin(code, host) {
     code = String(code || '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8);
-    if (code.length < 3) { mpStatus('Skriv in en rumskod.'); return; }
+    if (code.length < 3) { mpStatus(tr('Skriv in en rumskod.')); return; }
     if (S.mp) mpLeave(true);
     mpNameVal = mpClean($('mp-name').value || mpNameVal);
-    mpStatus('Ansluter…');
+    mpStatus(tr('Ansluter…'));
     let rt = null;
     try { rt = window.claude && await window.claude.use('room'); } catch (_) { rt = null; }
-    if (!rt) { mpStatus('Kunde inte ansluta till servern. Kontrollera att den körs.'); return; }
+    if (!rt) { mpStatus(tr('Kunde inte ansluta till servern. Kontrollera att den körs.')); return; }
     let room;
     try { room = await rt.join('pool8-' + code); }
-    catch (e) { mpStatus('Kunde inte gå med i rummet (' + ((e && e.code) || 'fel') + ').'); return; }
+    catch (e) { mpStatus(tr('Kunde inte gå med i rummet ({0}).', [(e && e.code) || 'fel'])); return; }
     const mp = S.mp = { room, code, host, me: null, G: null, pending: null, iShot: false, seat: -1, waiting: false, psig: '', unsubs: [] };
     mp.unsubs.push(room.on('mp.state', m => {
       if (!S.mp || S.mp !== mp || m.isMe) return;
@@ -2419,8 +2713,8 @@ const PHYS = (function () {
     mp.clock0 = mpClockSel;
     mp.unsubs.push(room.onPeers(ch => mpPeersChanged(ch)));
     await room.presence({ nm: mpNameVal, t: Date.now() }).catch(() => { });
-    if (host) mpStatus('Väntar på att din vän går med. Be hen öppna spelet → Spela online → Gå med och skriva in koden.', code);
-    else { mpStatus('Ansluten till rum ' + code.toUpperCase() + '. Väntar på spelet…'); mpEmit('mp.req', { e: 0, n: 0 }); }
+    if (host) mpStatus(tr('Väntar på att din vän går med. Be hen öppna spelet → Spela online → Gå med och skriva in koden.'), code);
+    else { mpStatus(tr('Ansluten till rum {0}. Väntar på spelet…', [code.toUpperCase()])); mpEmit('mp.req', { e: 0, n: 0 }); }
   }
   function mpLeave(silent) {
     const mp = S.mp; if (!mp) return;
@@ -2436,8 +2730,113 @@ const PHYS = (function () {
     }
   }
 
+  /* ---------------- Språkval ---------------- */
+  const TX = window.__TX || [];
+  const HAND = [['sv', 'Svenska'], ['en', 'English'], ['de', 'Deutsch'], ['fr', 'Français'], ['es', 'Español']];
+  const MTL = [['it', 'Italiano'], ['pt', 'Português'], ['nl', 'Nederlands'], ['fi', 'Suomi'], ['nb', 'Norsk'], ['da', 'Dansk'], ['is', 'Íslenska'], ['pl', 'Polski'], ['cs', 'Čeština'], ['sk', 'Slovenčina'], ['hu', 'Magyar'], ['ro', 'Română'], ['bg', 'Български'], ['hr', 'Hrvatski'], ['sl', 'Slovenščina'], ['et', 'Eesti'], ['lv', 'Latviešu'], ['lt', 'Lietuvių'], ['ru', 'Русский'], ['uk', 'Українська'], ['el', 'Ελληνικά'], ['tr', 'Türkçe'], ['he', 'עברית'], ['ar', 'العربية'], ['fa', 'فارسی'], ['hi', 'हिन्दी'], ['bn', 'বাংলা'], ['th', 'ไทย'], ['vi', 'Tiếng Việt'], ['id', 'Bahasa Indonesia'], ['ms', 'Bahasa Melayu'], ['ja', '日本語'], ['ko', '한국어'], ['zh', '中文'], ['af', 'Afrikaans']];
+  const RTL = ['ar', 'he', 'fa'];
+  let mtBusy = false;
+  function langName(c) { const a = HAND.concat(MTL).find(x => x[0] === c); return a ? a[1] : c; }
+  function buildDict(code) {
+    DICT = null; EN = null;
+    if (code === 'sv') return;
+    EN = {}; TX.forEach(r => { if (r[1]) EN[r[0]] = r[1]; });
+    const hi = { en: 1, de: 2, fr: 3, es: 4 }[code];
+    if (hi) { DICT = {}; TX.forEach(r => { if (r[hi]) DICT[r[0]] = r[hi]; }); return; }
+    try { DICT = JSON.parse(localStorage.getItem('pool8.mt.' + code)) || {}; } catch (_) { DICT = {}; }
+  }
+  const origText = new WeakMap(), origHTML = new WeakMap(), origAttr = new WeakMap();
+  const NOTR = ['h-modename', 'group', 'banner', 'plabel', 'clock', 'mp-status', 'modelist', 'challist', 'statlist', 'mtitle', 'mtext', 'mbtns', 'chatlog', 'chat-q', 'tray', 'shoot', 'h-snd', 'h-music', 'h-cine', 'h-guide', 'h-play', 'btn-replay', 'spinfx', 'stat-reset', 'st-shots', 'st-fouls', 'st-streak', 'st-acc', 'st-cleared', 'chal-total', 'sw-table', 'sw-cue', 'langpanel', 'h-langname', 'h-lang', 'h-acct', 'ac-who', 'ac-sync', 'ac-msg', 'ac-board', 'sub-lang', 'loading', 'rbar2'];
+  const INL = new Set(['b', 'i', 'em', 'kbd', 'small', 'br', 'strong', 'u']);
+  const HASL = /\p{L}/u;
+  function trKey(s) { if (window.__trk) window.__trk.add(s); const o = DICT ? DICT[s] : undefined; if (o !== undefined) return o; const e = EN ? EN[s] : undefined; return e !== undefined ? e : s; }
+  function isUnit(el) {
+    if (!HASL.test(el.textContent)) return false;
+    for (const c of el.querySelectorAll('*')) { if (!INL.has(c.tagName.toLowerCase()) || c.id || c.hasAttribute('data-notr')) return false; }
+    return true;
+  }
+  function trAttrs(el) {
+    for (const at of ['title', 'placeholder']) {
+      if (!el.hasAttribute(at)) continue;
+      let m = origAttr.get(el); if (!m) { m = {}; origAttr.set(el, m); }
+      if (m[at] === undefined) m[at] = el.getAttribute(at);
+      el.setAttribute(at, trKey(m[at]));
+    }
+  }
+  function walkTr(el) {
+    const tag = el.tagName.toLowerCase();
+    if (tag === 'script' || tag === 'style' || tag === 'canvas' || el.hasAttribute('data-notr') || (el.id && NOTR.includes(el.id))) return;
+    trAttrs(el);
+    if (el.children.length === 0 && el.childNodes.length && HASL.test(el.textContent) && tag !== 'button') { /* löv: hanteras som text nedan */ }
+    if (el.children.length > 0 && isUnit(el) && tag !== 'button' && tag !== 'div') {
+      if (!origHTML.has(el)) origHTML.set(el, el.innerHTML.trim());
+      el.innerHTML = trKey(origHTML.get(el)); return;
+    }
+    for (const n of Array.from(el.childNodes)) {
+      if (n.nodeType === 1) walkTr(n);
+      else if (n.nodeType === 3 && HASL.test(n.nodeValue)) {
+        if (!origText.has(n)) origText.set(n, n.nodeValue.trim());
+        const lead = /^\s*/.exec(n.nodeValue)[0], trail = /\s*$/.exec(n.nodeValue)[0];
+        n.nodeValue = lead + trKey(origText.get(n)) + trail;
+      }
+    }
+  }
+  let curSub = null;
+  function setLang(code, save) {
+    LANG = code; buildDict(code);
+    document.documentElement.lang = code; document.documentElement.dir = RTL.includes(code) ? 'rtl' : 'ltr';
+    if (save) { try { localStorage.setItem('pool8.lang', code); } catch (_) { } }
+    document.title = tr('8-Ball Pool – Övningsläge (3D)');
+    walkTr(document.body);
+    $('h-langname').textContent = langName(code);
+    try { $('h-modename').textContent = modeName(); } catch (_) { }
+    $('h-play').textContent = tr(S.started ? 'FORTSÄTT' : 'SPELA');
+    updateSettingsUI(); updateHUD(); buildCustUI(); updateCustUI(); S.ghost = getGhost();
+    if (curSub === 'modes') buildModeUI(); if (curSub === 'chal') buildChalUI(); if (curSub === 'stats') buildStatsUI();
+    if (S.mp) { $('chat-q').innerHTML = ''; buildChatQ(); }
+    buildLangUI();
+    if (window.__acctRefresh) window.__acctRefresh();
+  }
+  async function mtTranslate(code) {
+    const st = $('lang-status');
+    if (mtBusy) return;
+    if (!('Translator' in self)) { st.textContent = tr('Den här webbläsaren stöder inte inbyggd översättning. Använd Chrome (dator) för fler språk.'); return; }
+    mtBusy = true;
+    try {
+      const av = await Translator.availability({ sourceLanguage: 'en', targetLanguage: code });
+      if (av === 'unavailable') { st.textContent = tr('Webbläsaren kan inte översätta till det språket.'); mtBusy = false; return; }
+      st.textContent = tr('Förbereder översättning…');
+      const tl = await Translator.create({ sourceLanguage: 'en', targetLanguage: code, monitor(m) { m.addEventListener('downloadprogress', e => { st.textContent = tr('Laddar ner språkpaket… {0}%', [Math.round(e.loaded * 100)]); }); } });
+      const out = {}, rows = TX.filter(r => r[1] && r[1].indexOf('<') < 0);
+      for (let i = 0; i < rows.length; i++) {
+        const sv = rows[i][0], en = rows[i][1];
+        try {
+          const r = await tl.translate(en);
+          const ph = s => (s.match(/\{\d+\}/g) || []).sort().join(',');
+          if (r && ph(r) === ph(en)) out[sv] = r;
+        } catch (_) { }
+        if (i % 12 === 0) st.textContent = tr('Översätter… {0}%', [Math.round(100 * i / rows.length)]);
+      }
+      try { localStorage.setItem('pool8.mt.' + code, JSON.stringify(out)); } catch (_) { }
+      mtBusy = false; setLang(code, true);
+      $('lang-status').textContent = tr('Klart! Texter som saknar översättning visas på engelska.');
+    } catch (e) { mtBusy = false; st.textContent = tr('Översättningen misslyckades.'); }
+  }
+  function buildLangUI() {
+    const w = $('langlist'); if (!w) return; w.innerHTML = '';
+    HAND.forEach(([c, n]) => { const b = document.createElement('button'); b.textContent = n; b.classList.toggle('on', c === LANG); b.onclick = () => setLang(c, true); w.appendChild(b); });
+    const sel = $('lang-more'); if (!sel.options.length) {
+      const o0 = document.createElement('option'); o0.value = ''; o0.textContent = '—'; sel.appendChild(o0);
+      MTL.forEach(([c, n]) => { const o = document.createElement('option'); o.value = c; o.textContent = n; sel.appendChild(o); });
+    }
+    sel.value = MTL.some(x => x[0] === LANG) ? LANG : '';
+  }
+  $('lang-more').onchange = () => { const c = $('lang-more').value; if (!c) return; let have = false; try { have = !!localStorage.getItem('pool8.mt.' + c); } catch (_) { } if (have) setLang(c, true); else mtTranslate(c); };
+  $('h-lang').onclick = () => { buildLangUI(); showSub('lang'); };
+
   /* ---------------- Startmeny & inställningar ---------------- */
   S.menu = true; S.started = false; S.autoQ = true; S.quality = 'auto';
+
   const dpr = window.devicePixelRatio || 1;
   const QUALITY = {
     auto: { ratio: Math.min(dpr, 1.25), shadows: true, map: 1024 },
@@ -2462,10 +2861,10 @@ const PHYS = (function () {
   }
   function updateSettingsUI() {
     document.querySelectorAll('#qseg button').forEach(b => b.classList.toggle('on', b.dataset.q === S.quality));
-    $('h-snd').classList.toggle('on', S.sound); $('h-snd').textContent = 'Ljud: ' + (S.sound ? 'på' : 'av');
-    $('h-music').classList.toggle('on', S.music); $('h-music').textContent = 'Musik: ' + (S.music ? 'på' : 'av');
-    $('h-cine').classList.toggle('on', S.cine); $('h-cine').textContent = 'Filmisk kamera: ' + (S.cine ? 'på' : 'av');
-    $('h-guide').classList.toggle('on', S.guide); $('h-guide').textContent = 'Siktlinje: ' + (S.guide ? 'på' : 'av');
+    $('h-snd').classList.toggle('on', S.sound); $('h-snd').textContent = tr('Ljud') + ': ' + tr(S.sound ? 'på' : 'av');
+    $('h-music').classList.toggle('on', S.music); $('h-music').textContent = tr('Musik') + ': ' + tr(S.music ? 'på' : 'av');
+    $('h-cine').classList.toggle('on', S.cine); $('h-cine').textContent = tr('Filmisk kamera') + ': ' + tr(S.cine ? 'på' : 'av');
+    $('h-guide').classList.toggle('on', S.guide); $('h-guide').textContent = tr('Siktlinje') + ': ' + tr(S.guide ? 'på' : 'av');
   }
   function viewOffset() {
     const w = window.innerWidth, h = window.innerHeight;
@@ -2473,9 +2872,9 @@ const PHYS = (function () {
   }
   function openMenu() {
     if (S.menu) return;
-    if (S.state !== 'aim' && S.state !== 'place' && S.state !== 'watch') { toast('Vänta tills bollarna står still.', '', 1500); return; }
+    if (S.state !== 'aim' && S.state !== 'place' && S.state !== 'watch') { toast(tr('Vänta tills bollarna står still.'), '', 1500); return; }
     S.menu = true; document.body.classList.add('inmenu'); $('home').classList.remove('hide');
-    showSub(null); $('h-play').textContent = 'FORTSÄTT'; $('h-new').style.display = (S.started && !S.mp) ? '' : 'none';
+    showSub(null); $('h-play').textContent = tr('FORTSÄTT'); $('h-new').style.display = (S.started && !S.mp) ? '' : 'none';
     $('h-leave').style.display = S.mp ? '' : 'none'; $('h-modes').style.display = S.mp ? 'none' : '';
     viewOffset();
   }
@@ -2483,7 +2882,7 @@ const PHYS = (function () {
     S.menu = false; S.started = true; ensureAudio(); syncMusic();
     document.body.classList.remove('inmenu'); $('home').classList.add('hide');
     viewOffset(); updateHUD();
-    if (S.mode === 'free' && S.shots === 0 && S.state === 'place' && S.breakPlace) toast('Bryt racket! Placera vita bollen i det markerade området och tryck PLACERA HÄR.', '', 4500);
+    if (S.mode === 'free' && S.shots === 0 && S.state === 'place' && S.breakPlace) toast(tr('Bryt racket! Placera vita bollen i det markerade området och tryck PLACERA HÄR.'), '', 4500);
   }
   function showSub(id) {
     $('hmain').style.display = id ? 'none' : '';
@@ -2492,6 +2891,9 @@ const PHYS = (function () {
     $('sub-cust').classList.toggle('show', id === 'cust');
     $('sub-modes').classList.toggle('show', id === 'modes');
     $('sub-mp').classList.toggle('show', id === 'mp');
+    curSub = id;
+    $('sub-lang').classList.toggle('show', id === 'lang');
+    $('sub-acct').classList.toggle('show', id === 'acct');
     $('sub-chal').classList.toggle('show', id === 'chal');
     $('sub-learn').classList.toggle('show', id === 'learn');
     $('sub-stats').classList.toggle('show', id === 'stats');
@@ -2506,7 +2908,7 @@ const PHYS = (function () {
   $('h-chal').onclick = () => showSub('chal');
   $('h-learn').onclick = () => showSub('learn');
   $('h-stats').onclick = () => showSub('stats');
-  $('stat-reset').onclick = () => { if (!statArm) { statArm = true; $('stat-reset').textContent = 'Tryck igen för att bekräfta'; return; } ST = { shots: 0, pots: 0, fouls: 0, bestStreak: 0, runs: 0, mpPlayed: 0, mpWon: 0, since: Date.now() }; saveST(); buildStatsUI(); };
+  $('stat-reset').onclick = () => { if (!statArm) { statArm = true; $('stat-reset').textContent = tr('Tryck igen för att bekräfta'); return; } ST = { shots: 0, pots: 0, fouls: 0, bestStreak: 0, runs: 0, mpPlayed: 0, mpWon: 0, since: Date.now() }; saveST(); buildStatsUI(); };
   $('h-cust').onclick = () => showSub('cust');
   $('h-modes').onclick = () => showSub('modes');
   document.querySelectorAll('#mp-clockseg button').forEach(b => { b.onclick = () => { mpClockSel = +b.dataset.c; document.querySelectorAll('#mp-clockseg button').forEach(x => x.classList.toggle('on', x === b)); }; });
@@ -2515,6 +2917,8 @@ const PHYS = (function () {
   $('mp-create').onclick = () => mpJoin(mpCode(), true);
   $('mp-join').onclick = () => mpJoin($('mp-code').value, false);
   $('mp-name').oninput = () => { mpNameVal = mpClean($('mp-name').value); try { localStorage.setItem('pool8.name', mpNameVal); } catch (_) { } if (S.mp) S.mp.room.presence({ nm: mpNameVal }).catch(() => { }); };
+  $('h-acct').onclick = () => { if (window.__acctOpen) window.__acctOpen(); showSub('acct'); };
+  window.__tr = tr;
   $('h-set').onclick = () => { updateSettingsUI(); showSub('set'); };
   document.querySelectorAll('[data-back]').forEach(b => { b.onclick = () => showSub(null); });
   document.querySelectorAll('#qseg button').forEach(b => { b.onclick = () => applyQuality(b.dataset.q, true); });
@@ -2619,13 +3023,13 @@ const PHYS = (function () {
   function buildCustUI() {
     const tw = $('sw-table'), cw = $('sw-cue'); tw.innerHTML = ''; cw.innerHTML = '';
     TABLES.forEach((t, i) => {
-      const b = document.createElement('button'); b.className = 'swi'; b.title = t.n;
-      b.innerHTML = '<span class="sw tb" style="' + tableSwatch(t) + '"></span><span>' + t.n + '</span>';
+      const b = document.createElement('button'); b.className = 'swi'; b.title = tr(t.n);
+      b.innerHTML = '<span class="sw tb" style="' + tableSwatch(t) + '"></span><span>' + tr(t.n) + '</span>';
       b.onclick = () => applyTable(i, true); tw.appendChild(b);
     });
     CUES.forEach((c, i) => {
-      const b = document.createElement('button'); b.className = 'swi'; b.title = c.n;
-      b.innerHTML = '<span class="sw cu" style="' + cueSwatch(c) + '"></span><span>' + c.n + '</span>';
+      const b = document.createElement('button'); b.className = 'swi'; b.title = tr(c.n);
+      b.innerHTML = '<span class="sw cu" style="' + cueSwatch(c) + '"></span><span>' + tr(c.n) + '</span>';
       b.onclick = () => applyCue(i, true); cw.appendChild(b);
     });
   }
@@ -2672,6 +3076,12 @@ const PHYS = (function () {
   updateSettingsUI();
   updateCamera(100);
   requestAnimationFrame(t => { last = t; loop(t); });
+  (function initLang() {
+    let l = null; try { l = localStorage.getItem('pool8.lang'); } catch (_) { }
+    if (!l) { const n = (navigator.language || 'sv').slice(0, 2).toLowerCase(); l = ['sv', 'en', 'de', 'fr', 'es'].includes(n) ? n : 'en'; }
+    if (l !== 'sv') { let ok = HAND.some(x => x[0] === l); if (!ok) { try { ok = !!localStorage.getItem('pool8.mt.' + l); } catch (_) { } } if (!ok) l = 'en'; }
+    setLang(l, false);
+  })();
 })();
 
 </script>
