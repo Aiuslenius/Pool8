@@ -8,8 +8,20 @@
   const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
   let ws = null, open = false, queue = [];
   const rooms = new Map();
+  let pw = ''; try { pw = localStorage.getItem('pool8.pw') || ''; } catch (_) { }
+  async function auth() {
+    for (let i = 0; i < 4; i++) {
+      try {
+        const r = await fetch('/auth?pw=' + encodeURIComponent(pw));
+        if (r.status !== 401) return;
+      } catch (_) { return; }
+      const v = window.prompt('Servern kräver lösenord:');
+      if (v === null) return;
+      pw = v; try { localStorage.setItem('pool8.pw', pw); } catch (_) { }
+    }
+  }
   function connect() {
-    ws = new WebSocket(proto + location.host + '/ws');
+    ws = new WebSocket(proto + location.host + '/ws?pw=' + encodeURIComponent(pw));
     ws.onopen = () => { open = true; queue.forEach(q => ws.send(q)); queue = []; rooms.forEach(r => r._hello()); };
     ws.onmessage = e => { let m; try { m = JSON.parse(e.data); } catch (_) { return; } const r = rooms.get(m.room); if (r) r._in(m); };
     ws.onclose = () => { open = false; setTimeout(connect, 1500); };
@@ -51,7 +63,7 @@
     r._hello();
     return r;
   }
-  connect();
+  auth().then(connect);
   window.claude = { use: async n => n === 'room' ? { join: async name => rooms.get(name) || mk(name) } : null };
 })();
 </script>
@@ -202,6 +214,24 @@ body.inmenu #hud{display:none}
 @media (pointer:fine){#power{pointer-events:none!important}#ptrack{cursor:default}}
 body.pulling #power{box-shadow:0 0 0 2px #e8c070}
 body.pulling{cursor:ns-resize}
+#clock{position:absolute;left:50%;top:76px;transform:translateX(-50%);padding:4px 14px;border-radius:20px;font:800 13px Inter,sans-serif;display:none;font-variant-numeric:tabular-nums}
+#clock.low{color:#ff8a80;border-color:#ff6b6b}
+#chat{position:absolute;left:18px;bottom:132px;width:236px;padding:10px;display:none;flex-direction:column;gap:7px}
+#chat.show{display:flex}
+#chat .qk{display:flex;flex-wrap:wrap;gap:5px}
+#chat .qk button{padding:5px 8px;border-radius:8px;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.12);font-size:12px}
+#chat .qk button:hover{background:rgba(255,255,255,.16)}
+#chat input{padding:8px 10px;border-radius:8px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.06);color:#fff;font:500 13px Inter,sans-serif;outline:none;user-select:text;-webkit-user-select:text;width:100%;box-sizing:border-box}
+#chatlog{position:absolute;left:18px;bottom:132px;width:260px;display:flex;flex-direction:column;gap:4px;pointer-events:none}
+#chat.show~#chatlog{bottom:256px}
+#chatlog div{padding:6px 10px;border-radius:10px;background:rgba(14,18,22,.78);border:1px solid rgba(255,255,255,.1);font-size:13px;line-height:1.3;animation:cl .25s;word-break:break-word}
+#chatlog div b{color:#e8c070;margin-right:5px}
+#chatlog div.big{font-size:26px;line-height:1.1;padding:4px 10px}
+@keyframes cl{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+#statlist .strow{display:flex;justify-content:space-between;padding:8px 2px;border-bottom:1px solid rgba(255,255,255,.08);font-size:14px;color:#c3cbd3}
+#statlist .strow b{color:#f6dca3}
+body.narrow #spinfx{display:none}
+body.narrow #chat{left:8px;bottom:88px}body.narrow #chatlog{left:8px;bottom:88px}
 </style>
 </head>
 <body>
@@ -220,20 +250,26 @@ body.pulling{cursor:ns-resize}
   </div>
   <div id="topc" class="glass"><div id="group">Öppet bord</div><div id="tray"></div></div>
   <div id="banner"></div>
+  <div id="clock" class="glass"></div>
   <div id="power" class="glass"><small>Kraft</small><div id="ptrack"><div id="pfill"></div></div><div id="plabel">70%</div></div>
   <div id="spinwrap" class="glass">
     <div id="spin" title="Effekt: klicka där kön ska träffa vita bollen. Dubbelklicka för att nollställa."><div id="spindot"></div></div>
-    <small>Effekt<br>Följ ↑ · Dra ↓<br>Sida ← →</small>
+    <small>Effekt<br>Följ ↑ · Dra ↓<br>Sida ← →<span id="spinfx" style="display:block;margin-top:4px;max-width:150px;text-transform:none;letter-spacing:0;color:#c3cbd3;line-height:1.3"></span></small>
   </div>
   <div id="actions">
     <button id="btn-view">Ovanifrån<kbd>T</kbd></button>
     <button id="btn-guide" class="on">Siktlinje<kbd>G</kbd></button>
     <button id="btn-sound" class="on">Ljud<kbd>M</kbd></button>
+    <button id="btn-chat" style="display:none">💬 Chatt</button>
+    <button id="btn-replay" disabled>⟲ Repris</button>
     <button id="btn-undo" disabled>Ångra<kbd>U</kbd></button>
     <button id="btn-new">Ny rack<kbd>R</kbd></button>
     <button id="btn-menu">Meny<kbd>Esc</kbd></button>
   </div>
   <button id="shoot">SKJUT</button>
+  <div id="chat" class="glass"><div class="qk" id="chat-q"></div><input id="chat-in" maxlength="60" placeholder="Skriv och tryck Enter…" autocomplete="off"></div>
+  <div id="chatlog"></div>
+  <div id="rbar" class="glass" style="display:none;position:absolute;left:50%;top:76px;transform:translateX(-50%);padding:6px 16px;font:700 12px Inter;letter-spacing:.14em;text-transform:uppercase;color:#e8c070">⟲ Repris · slow motion · klicka eller Esc för att stänga</div>
   <div id="hint">Vänsterklick + dra = sikta · Håll HÖGERKLICK och dra musen NEDÅT = kraft, släpp = skjut · Scroll = zoom · Mellanslag = skjut</div>
 </div>
 <div id="home">
@@ -244,10 +280,13 @@ body.pulling{cursor:ns-resize}
       <div class="hbtns">
         <button id="h-play" class="hbtn hprimary">SPELA</button>
         <button id="h-modes" class="hbtn">Välj spelläge<small id="h-modename">Fri övning</small></button>
+        <button id="h-chal" class="hbtn">Utmaningar<small>Samla stjärnor</small></button>
         <button id="h-new" class="hbtn" style="display:none">Ny rack</button>
         <button id="h-cust" class="hbtn">Anpassa bord &amp; kö</button>
         <button id="h-mp" class="hbtn">Spela online<small>Turordnat mot en vän</small></button>
         <button id="h-leave" class="hbtn" style="display:none">Lämna rummet</button>
+        <button id="h-learn" class="hbtn">Träningsguide<small>Effekt, position och teknik</small></button>
+        <button id="h-stats" class="hbtn">Statistik</button>
         <button id="h-how" class="hbtn">Så spelar du</button>
         <button id="h-set" class="hbtn">Inställningar</button>
       </div>
@@ -255,14 +294,43 @@ body.pulling{cursor:ns-resize}
     </div>
     <div id="sub-mp" class="hsub">
       <h2>Spela online</h2>
-      <p>Turordnat 8-ball mot en vän. Ni måste båda ha sidan öppen samtidigt.</p>
+      <p>Turordnat 8-ball mot en vän, med chatt, poängställning och valfri skottklocka. Ni måste båda ha sidan öppen samtidigt.</p>
       <h3>Ditt namn</h3>
       <input id="mp-name" class="tin" maxlength="16" placeholder="Spelare" autocomplete="off">
       <h3>Skapa rum</h3>
+      <div class="seg" id="mp-clockseg"><button data-c="0" class="on">Ingen skottklocka</button><button data-c="30">30 s</button><button data-c="60">60 s</button></div>
       <div class="row"><button class="hbtn" id="mp-create">Skapa rum</button></div>
       <h3>Gå med i rum</h3>
       <div class="row"><input id="mp-code" class="tin" maxlength="8" placeholder="Rumskod" autocomplete="off" style="width:130px;text-transform:uppercase"><button class="hbtn" id="mp-join">Gå med</button></div>
       <div id="mp-status"></div>
+      <button class="hback hbtn" data-back>← Tillbaka</button>
+    </div>
+    <div id="sub-chal" class="hsub"><h2>Utmaningar</h2><p id="chal-total"></p><div id="challist"></div><button class="hback hbtn" data-back>← Tillbaka</button></div>
+    <div id="sub-stats" class="hsub"><h2>Statistik</h2><div id="statlist"></div><div class="row" style="margin-top:14px"><button class="hbtn" id="stat-reset">Nollställ statistik</button></div><button class="hback hbtn" data-back>← Tillbaka</button></div>
+    <div id="sub-learn" class="hsub">
+      <h2>Träningsguide</h2>
+      <p>Var på vita bollen du träffar bestämmer vad den gör efter träffen. Klicka på den lilla bollen nere till vänster i spelet för att välja punkt.</p>
+      <svg viewBox="0 0 330 200" width="330" height="200" style="display:block;margin:6px 0 10px">
+        <defs><radialGradient id="lg" cx="35%" cy="30%"><stop offset="0" stop-color="#fff"/><stop offset=".6" stop-color="#e9e4d6"/><stop offset="1" stop-color="#b9b3a3"/></radialGradient></defs>
+        <circle cx="90" cy="100" r="82" fill="url(#lg)"/>
+        <g stroke="rgba(0,0,0,.18)"><line x1="90" y1="26" x2="90" y2="174"/><line x1="16" y1="100" x2="164" y2="100"/></g>
+        <g fill="#d8332a" stroke="#fff" stroke-width="2"><circle cx="90" cy="100" r="6"/><circle cx="90" cy="48" r="6"/><circle cx="90" cy="152" r="6"/><circle cx="38" cy="100" r="6"/><circle cx="142" cy="100" r="6"/></g>
+        <g font-family="Inter,sans-serif" font-size="11" fill="#c9d1d9"><text x="176" y="52">Överdel = följ</text><text x="176" y="104">Mitten = ren</text><text x="176" y="156">Underdel = back</text><text x="176" y="122" font-size="10" fill="#8d99a5">Sida = effekt</text></g>
+      </svg>
+      <h3>Effekt</h3>
+      <ul>
+        <li><b>Följ (överdel):</b> vita bollen rullar framåt efter träffen. Använd för att komma till nästa boll.</li>
+        <li><b>Back (underdel):</b> vita bollen drar tillbaka. Träna på det vid raka skott.</li>
+        <li><b>Sidoeffekt:</b> ändrar hur vita studsar i kudden och sänker kraften. Sikta lite åt motsatt håll.</li>
+        <li><b>Mitten:</b> mest exakt. Börja alltid här.</li>
+      </ul>
+      <h3>Position och teknik</h3>
+      <ul>
+        <li>Tänk ett skott framåt: var vill du att vita bollen står efteråt?</li>
+        <li>Mjuka skott ger bäst kontroll. Slå hårt bara när du måste.</li>
+        <li>Använd siktlinjens spökboll för snedskott. Ju skarpare vinkel, desto tunnare träff.</li>
+        <li>Spöket i spellägena visar hur det gick förra gången du var bäst.</li>
+      </ul>
       <button class="hback hbtn" data-back>← Tillbaka</button>
     </div>
     <div id="sub-modes" class="hsub"><h2>Spelläge</h2><div id="modelist"></div><button class="hback hbtn" data-back>← Tillbaka</button></div>
@@ -303,6 +371,7 @@ body.pulling{cursor:ns-resize}
       <p>Låg stänger av skuggor. Välj Låg om det laggar.</p>
       <h3>Övrigt</h3>
       <div class="row"><button class="tgl" id="h-snd">Ljud</button><button class="tgl" id="h-guide">Siktlinje</button></div>
+      <div class="row" style="margin-top:8px"><button class="tgl" id="h-music">Musik</button><button class="tgl" id="h-cine">Filmisk kamera</button></div>
       <button class="hback hbtn" data-back>← Tillbaka</button>
     </div>
   </div>
@@ -678,7 +747,45 @@ const PHYS = (function () {
     return { foul, reasons, win, loss, newGroup, potted, cueIn, legalPots, ballInHand: foul };
   }
 
-  return { R, HX, HZ, DT, VMAX, POCKETS, JAWS, CG, SG, JAW_C, JAW_S, JAW_D, makeRack, step, anyMoving, isMoving, strike, castAim, legalPlacement, evaluateShot, typeOf, nameOf, newBall, DRILLS };
+  // 9-ball: diamant med 1 överst och 9 i mitten
+  function makeRack9() {
+    const balls = [];
+    for (let i = 0; i < 16; i++) balls.push(newBall(i));
+    const r = shuffle([2, 3, 4, 5, 6, 7, 8]);
+    const rows = [[1], [r[0], r[1]], [r[2], 9, r[3]], [r[4], r[5]], [r[6]]];
+    const D = 2 * R + 0.05, ax = HX / 2;
+    rows.forEach((row, ri) => row.forEach((id, i) => {
+      const b = balls[id]; b.x = ax + ri * D * Math.sqrt(3) / 2; b.z = (i - (row.length - 1) / 2) * D;
+    }));
+    for (let i = 10; i < 16; i++) balls[i].out = true;
+    balls[0].x = -HX / 2; balls[0].z = 0;
+    return balls;
+  }
+  // 9-ball-regler: lägsta bollen först; nian vinner (om ingen foul), annars läggs den tillbaka
+  function evaluate9(shot) {
+    const reasons = [];
+    const potted = shot.pocketed.filter(id => id !== 0), cueIn = shot.pocketed.includes(0);
+    const low = Math.min.apply(null, shot.onTableBefore);
+    let foul = false;
+    if (cueIn) { foul = true; reasons.push('Vita bollen i hål'); }
+    if (shot.firstHit === null) { foul = true; reasons.push('Ingen boll träffades'); }
+    else if (shot.firstHit !== low) { foul = true; reasons.push('Lägsta bollen (' + low + ') skulle träffas först'); }
+    if (!foul && potted.length === 0 && !shot.railAfter) { foul = true; reasons.push('Ingen boll nådde kudden'); }
+    const nine = potted.includes(9);
+    return { foul, reasons, win: nine && !foul, respot9: nine && foul, legalPots: foul ? 0 : potted.length, potted, cueIn, low };
+  }
+  // Straight pool (förenklad): valfri boll i valfri ficka, +1 per boll, -1 för foul
+  function evaluateStraight(shot) {
+    const reasons = [];
+    const potted = shot.pocketed.filter(id => id !== 0), cueIn = shot.pocketed.includes(0);
+    let foul = false;
+    if (cueIn) { foul = true; reasons.push('Vita bollen i hål'); }
+    if (shot.firstHit === null) { foul = true; reasons.push('Ingen boll träffades'); }
+    if (!foul && potted.length === 0 && !shot.railAfter) { foul = true; reasons.push('Ingen boll nådde kudden'); }
+    return { foul, reasons, points: potted.length - (foul ? 1 : 0), legalPots: potted.length, potted, cueIn };
+  }
+
+  return { R, HX, HZ, DT, VMAX, POCKETS, JAWS, CG, SG, JAW_C, JAW_S, JAW_D, makeRack, makeRack9, evaluate9, evaluateStraight, step, anyMoving, isMoving, strike, castAim, legalPlacement, evaluateShot, typeOf, nameOf, newBall, DRILLS };
 })();
 
 
@@ -1096,19 +1203,45 @@ const PHYS = (function () {
     s.connect(f); f.connect(g); g.connect(master); s.start(t, Math.random() * 0.2); s.stop(t + dur + 0.02);
   }
   const sfx = {
-    ball(v) { const n = performance.now(); if (n - lastSnd < 12) return; lastSnd = n; const k = clamp(v / 250, 0.04, 1); tone(2300 + rnd(-150, 150), 1400, 0.05, 0.35 * k, 'triangle'); noise(0.035, 0.45 * k, 'bandpass', 3200, 1.2); },
+    ball(v) { const n = performance.now(); if (n - lastSnd < 12) return; lastSnd = n; const k = clamp(v / 250, 0.04, 1); tone(2300 + rnd(-150, 150) + k * 500, 1400, 0.05, 0.35 * k, 'triangle'); noise(0.035, 0.45 * k, 'bandpass', 3200, 1.2); if (v > 320) { noise(0.05, 0.35, 'highpass', 5200, 0.8); tone(380, 200, 0.07, 0.25, 'sine'); } },
     cushion(v) { const k = clamp(v / 250, 0.04, 1); tone(120, 60, 0.12, 0.5 * k, 'sine'); noise(0.07, 0.25 * k, 'lowpass', 900, 0.7); },
     pocket(v) { const k = clamp(v / 200 + 0.3, 0.3, 1); tone(110, 50, 0.22, 0.6 * k, 'sine'); noise(0.28, 0.3 * k, 'lowpass', 600, 0.8); setTimeout(() => noise(0.12, 0.2 * k, 'bandpass', 1500, 2), 160); },
     cue(p) { tone(900, 420, 0.06, 0.3 + 0.5 * p, 'triangle'); noise(0.04, 0.4 + 0.4 * p, 'bandpass', 2600, 1.5); }
   };
+
+  /* ---- musik: lugn, genererad lo-fi-loop ---- */
+  let musicTimer = 0, musicGain = null, musicBar = 0;
+  const CHORDS = [[220, 261.63, 329.63, 392], [174.61, 220, 261.63, 329.63], [261.63, 329.63, 392, 493.88], [196, 246.94, 293.66, 392]];
+  const PENTA = [440, 523.25, 587.33, 659.25, 783.99, 880];
+  function musicNote(f, t, dur, vol, type) {
+    const o = AC.createOscillator(), g = AC.createGain();
+    o.type = type || 'sine'; o.frequency.value = f;
+    g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(vol, t + Math.min(0.5, dur * 0.3)); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g); g.connect(musicGain); o.start(t); o.stop(t + dur + 0.05);
+  }
+  function musicBarPlay() {
+    if (!AC || !S.music || !S.sound) return;
+    const t = AC.currentTime + 0.05, ch = CHORDS[musicBar % 4], len = 3.2; musicBar++;
+    ch.forEach((f, i) => musicNote(f, t + i * 0.04, len * 1.2, 0.05, 'sine'));
+    musicNote(ch[0] / 2, t, len, 0.09, 'triangle');
+    for (let k = 0; k < 3; k++) if (Math.random() < 0.7) musicNote(PENTA[Math.floor(Math.random() * PENTA.length)], t + 0.4 + k * 0.9 + Math.random() * 0.3, 1.4, 0.035, 'sine');
+  }
+  function syncMusic() {
+    const want = S.music && S.sound;
+    if (want && !musicTimer) {
+      ensureAudio(); if (!AC) return;
+      if (!musicGain) { musicGain = AC.createGain(); musicGain.gain.value = 0.9; musicGain.connect(AC.destination); }
+      musicBarPlay(); musicTimer = setInterval(musicBarPlay, 3200);
+    } else if (!want && musicTimer) { clearInterval(musicTimer); musicTimer = 0; }
+  }
 
   /* ---------------- Spelstate ---------------- */
   const S = {
     state: 'aim', aim: 0, camYaw: 0, pitch: 0.5, dist: 102, power: 0.7, sa: 0, sb: 0,
     group: null, shots: 0, fouls: 0, streak: 0, best: 0, good: 0, cleared: 0,
     guide: true, top: false, topBefore: null, sound: true,
-    mp: null, oppGroup: null,
-    mode: 'free', drill: 0, round: 1, attempts: 0, score: 0,
+    mp: null, oppGroup: null, music: false, cine: true, rec: null, lastRec: null, replay: null, zoomK: 1,
+    mode: 'free', rule: 'free', chal: null, ghost: null, runLog: [], drill: 0, round: 1, attempts: 0, score: 0,
     balls: [], shot: null, still: 0, acc: 0, anim: null, follow: null, undo: null, over: false, camTarget: new THREE.Vector3(-HX / 2, R, 0)
   };
   const cue = () => S.balls[0];
@@ -1148,10 +1281,13 @@ const PHYS = (function () {
       el.classList.toggle('mine', !!S.group && P.typeOf(n) === S.group);
       el.classList.toggle('theirs', !!S.mp && !!S.oppGroup && P.typeOf(n) === S.oppGroup);
     }
-    $('tray').style.display = (S.mode === 'drill' || S.mode === 'oneball') ? 'none' : '';
+    $('tray').style.display = (S.rule === 'free' || S.rule === 'clear') ? '' : 'none';
     if (S.mp) $('group').textContent = mpLabel(); else
     if (S.mode !== 'free') $('group').textContent = modeLabel(); else
     $('group').textContent = S.group ? 'Du spelar ' + P.nameOf(S.group) + (S.group === 'solid' ? ' (1–7)' : ' (9–15)') : 'Öppet bord';
+    $('spinfx').textContent = spinFx();
+    $('btn-replay').disabled = !S.replay && !(S.lastRec && !S.menu && ['aim', 'place', 'watch'].includes(S.state));
+    $('btn-replay').textContent = S.replay ? '■ Stoppa repris' : '⟲ Repris';
     $('btn-undo').disabled = !!S.mp || !(S.undo && (S.state === 'aim' || S.state === 'place' || S.over));
     $('btn-new').disabled = !!S.mp;
     $('btn-view').classList.toggle('on', S.top);
@@ -1176,24 +1312,28 @@ const PHYS = (function () {
 
   /* ---------------- Rack / återställning ---------------- */
   function resetRack(full) {
-    S.balls = P.makeRack();
-    if (S.mode === 'drill') applyDrill(S.drill);
-    else if (S.mode === 'oneball') { S.round = 1; S.attempts = 0; S.score = 0; spawnOneBall(); }
+    S.balls = S.rule === 'nine' ? P.makeRack9() : P.makeRack();
+    let aimFlow = false;
+    S.runLog = []; S.score = 0; S.ghost = getGhost();
+    if (S.rule === 'drill') { applyDrill(S.drill); aimFlow = true; }
+    else if (S.rule === 'oneball') { S.round = 1; S.attempts = 0; S.score = 0; spawnOneBall(); aimFlow = true; }
+    else if (S.rule === 'streak') { spawnScatter(); aimFlow = true; }
     for (let i = 0; i < 16; i++) { meshes[i].visible = !S.balls[i].out; blobs[i].visible = !S.balls[i].out; }
+    S.lastRec = null; S.rec = null; if (S.replay) stopReplay(true);
     S.group = null; S.state = 'aim'; S.over = false; S.undo = null; S.shot = null; S.anim = null; S.follow = null; S.still = 0; S.acc = 0;
     if (full) { S.shots = 0; S.fouls = 0; S.streak = 0; S.best = 0; S.good = 0; }
     S.aim = 0; S.camYaw = 0;
-    if (S.mode === 'drill' || S.mode === 'oneball') {
+    if (aimFlow) {
       S.state = 'aim'; S.breakPlace = false; S.topBefore = null; S.top = false;
       S.camTarget.set(cue().x, R, cue().z);
       hideModal(); updateHUD();
-      toast(S.mode === 'drill' ? P.DRILLS[S.drill].desc : 'Sänk bollen! Du har tre försök per runda.', '', 4000);
+      toast(S.rule === 'drill' ? P.DRILLS[S.drill].desc : S.rule === 'streak' ? 'Sänk så många bollar du kan i rad – första missen avslutar.' : 'Sänk bollen! Du har tre försök per runda.', '', 4000);
       return;
     }
     S.state = 'place'; S.breakPlace = true; S.topBefore = false; S.top = true;
     S.camTarget.set(cue().x, R, cue().z);
     hideModal(); updateHUD();
-    toast('Bryt racket! Placera vita bollen i det markerade området och tryck PLACERA HÄR.', '', 4500);
+    toast(S.rule === 'nine' ? 'Bryt! Träffa alltid lägsta bollen först – nian vinner.' : S.rule === 'straight' ? 'Straight pool till ' + STRAIGHT_TARGET + ' poäng. Bryt racket!' : 'Bryt racket! Placera vita bollen i det markerade området och tryck PLACERA HÄR.', '', 4500);
   }
 
   /* ---------------- Skott ---------------- */
@@ -1244,18 +1384,19 @@ const PHYS = (function () {
 
   function finishShot() {
     if (S.mp) { finishShotMp(); return; }
-    if (S.mode !== 'free') { finishShotAlt(); return; }
+    if (S.rule !== 'free') { finishShotAlt(); return; }
     const res = P.evaluateShot({ group: S.group }, S.shot);
     S.shots++;
     if (res.foul) { S.fouls++; S.streak = 0; }
     else if (res.legalPots > 0) { S.streak++; S.best = Math.max(S.best, S.streak); S.good++; }
     else S.streak = 0;
+    statShot(!res.foul && res.legalPots > 0, res.foul);
     const hadGroup = !!S.group;
     if (!S.group && res.newGroup) S.group = res.newGroup;
     S.shot = null; S.state = 'aim';
 
     if (res.win) {
-      S.cleared++; S.over = true; updateHUD();
+      S.cleared++; ST.runs++; saveST(); S.over = true; updateHUD();
       toast('Åttan i hål!', 'good', 2500);
       showModal('Bordet klarat! 🎱', 'Du klarade bordet på ' + S.shots + ' skott (' + S.fouls + ' foul). Träffprocent: ' + Math.round(100 * S.good / S.shots) + '%.',
         [{ label: 'Ångra sista skottet', fn: undoShot }, { label: 'Ny rack', primary: true, fn: () => resetRack(true) }]);
@@ -1305,6 +1446,47 @@ const PHYS = (function () {
   }
 
   /* ---------------- Kamera ---------------- */
+  /* ---------------- Repris ---------------- */
+  function recFrame(dt) {
+    const r = S.rec; if (!r) return;
+    const f = new Float32Array(16 * 8);
+    for (let i = 0; i < 16; i++) {
+      const m = meshes[i], o = i * 8;
+      f[o] = m.position.x; f[o + 1] = m.position.y; f[o + 2] = m.position.z;
+      f[o + 3] = m.quaternion.x; f[o + 4] = m.quaternion.y; f[o + 5] = m.quaternion.z; f[o + 6] = m.quaternion.w;
+      f[o + 7] = m.visible ? 1 : 0;
+    }
+    r.t += dt; r.ts.push(r.t); r.fr.push(f);
+    if (r.fr.length > 2400) S.rec = null;
+  }
+  function startRec() { S.rec = { t: 0, ts: [], fr: [] }; }
+  function endRec() { if (S.rec && S.rec.fr.length > 12) S.lastRec = S.rec; S.rec = null; }
+  function startReplay() {
+    if (!S.lastRec || S.replay || S.menu || !['aim', 'place', 'watch'].includes(S.state)) return;
+    S.replay = { t: 0, prev: S.state, top: S.top, topBefore: S.topBefore };
+    S.state = 'replay'; S.top = true; cueYaw.visible = false;
+    $('rbar').style.display = ''; updateHUD();
+  }
+  function stopReplay(quiet) {
+    const r = S.replay; if (!r) return;
+    S.replay = null; S.state = r.prev; S.top = r.top; S.topBefore = r.topBefore;
+    $('rbar').style.display = 'none'; shadowForce = 3;
+    if (!quiet) updateHUD();
+  }
+  function replayFrame(dt) {
+    const r = S.replay, rec = S.lastRec; r.t += dt * 0.35;
+    const T = rec.ts; let i = 0;
+    if (r.t >= T[T.length - 1] + 0.6) { stopReplay(); return; }
+    while (i < T.length - 1 && T[i + 1] < r.t) i++;
+    const f = rec.fr[i];
+    for (let k = 0; k < 16; k++) {
+      const o = k * 8, m = meshes[k], bl = blobs[k];
+      m.position.set(f[o], f[o + 1], f[o + 2]); m.quaternion.set(f[o + 3], f[o + 4], f[o + 5], f[o + 6]);
+      m.visible = f[o + 7] > 0.5; bl.visible = m.visible && f[o + 1] > R - 0.5;
+      bl.position.x = f[o]; bl.position.z = f[o + 2];
+    }
+  }
+
   function topHeight() {
     const t = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
     return Math.max((HZ + 28) / t, (HX + 28) / (t * camera.aspect)) * 1.02;
@@ -1322,6 +1504,19 @@ const PHYS = (function () {
       return;
     }
     const c = cue();
+    let zk = 1;
+    if (S.state === 'roll' && S.cine && !S.top) {
+      let sx = 0, sz = 0, n = 0, sink = null;
+      for (const b of S.balls) {
+        if (b.sink) { sink = P.POCKETS[b.pocket]; continue; }
+        if (b.out) continue;
+        const sp = Math.abs(b.vx) + Math.abs(b.vz);
+        if (sp > 6 || b.id === 0) { const w = b.id === 0 ? 1.5 : 1; sx += b.x * w; sz += b.z * w; n += w; }
+      }
+      if (sink) { S.camTarget.lerp(_v.set(sink.x * 0.85 + c.x * 0.15, R, sink.z * 0.85 + c.z * 0.15), 1 - Math.exp(-3 * dt)); zk = 0.72; }
+      else if (n) S.camTarget.lerp(_v.set(sx / n, R, sz / n), 1 - Math.exp(-1.6 * dt));
+    }
+    S.zoomK += (zk - S.zoomK) * (1 - Math.exp(-3 * dt));
     if (S.state === 'aim' || S.state === 'place' || S.state === 'watch') S.camTarget.lerp(_v.set(c.x, R, c.z), 1 - Math.exp(-9 * dt));
     if ((S.state === 'aim' || S.state === 'watch') && !S.top) S.camYaw = S.aim;
     const k = 1 - Math.exp(-(S.top ? 7 : 12) * dt);
@@ -1333,8 +1528,9 @@ const PHYS = (function () {
       desired.up.set(0, 1, 0);
       const dx = Math.cos(S.camYaw), dz = Math.sin(S.camYaw), cp = Math.cos(S.pitch), sp = Math.sin(S.pitch);
       const t = S.camTarget;
-      desired.position.set(t.x - dx * S.dist * cp, R + S.dist * sp, t.z - dz * S.dist * cp);
-      desired.lookAt(t.x + dx * S.dist * 0.22, R * 0.6, t.z + dz * S.dist * 0.22);
+      const D = S.dist * S.zoomK;
+      desired.position.set(t.x - dx * D * cp, R + D * sp, t.z - dz * D * cp);
+      desired.lookAt(t.x + dx * D * 0.22, R * 0.6, t.z + dz * D * 0.22);
     }
     camera.position.lerp(desired.position, k);
     camera.quaternion.slerp(desired.quaternion, k);
@@ -1419,7 +1615,7 @@ const PHYS = (function () {
           const c = cue();
           P.strike(c, Math.cos(S.aim), Math.sin(S.aim), pw, S.sa, S.sb);
           sfx.cue(pw);
-          S.state = 'roll'; S.still = 0; S.acc = 0;
+          S.state = 'roll'; S.still = 0; S.acc = 0; startRec();
           S.follow = { t: 0 };
           S.camTarget.set(c.x, R, c.z);
         }
@@ -1437,7 +1633,9 @@ const PHYS = (function () {
       }
       let sinking = false;
       for (const b of S.balls) if (b.sink) sinking = true;
-      if (!P.anyMoving(S.balls) && !sinking) { S.still += dt; if (S.still > 0.4) finishShot(); } else S.still = 0;
+      if (!P.anyMoving(S.balls) && !sinking) { S.still += dt; if (S.still > 0.4) { endRec(); finishShot(); } } else S.still = 0;
+    } else if (S.state === 'replay' && S.replay) {
+      cueYaw.visible = false; replayFrame(dt);
     } else if (S.state === 'aim') {
       placeCue(2.0 + (pull ? 3 + 26 * S.power : 0));
       cueYaw.visible = true;
@@ -1448,7 +1646,7 @@ const PHYS = (function () {
     }
 
     // synka bollar
-    for (const b of S.balls) {
+    if (S.state !== 'replay') for (const b of S.balls) {
       const m = meshes[b.id], bl = blobs[b.id];
       if (b.sink) {
         b.sink.t += dt / 0.4;
@@ -1467,6 +1665,8 @@ const PHYS = (function () {
         if (w > 1e-3) { _q.setFromAxisAngle(_v.set(b.wx / w, b.wy / w, b.wz / w), w * simT); m.quaternion.premultiply(_q); }
       }
     }
+
+    if (S.state === 'roll') recFrame(dt);
 
     // markör vid placering
     if (S.state === 'place' && !S.menu) {
@@ -1515,6 +1715,7 @@ const PHYS = (function () {
   }
   canvas.addEventListener('pointerdown', e => {
     ensureAudio();
+    if (S.replay) { stopReplay(); return; }
     if (e.pointerType === 'mouse' && e.button === 2) {
       if (S.state === 'aim' && !S.over && !S.menu && !pull && (!S.mp || mpMyTurn())) {
         try { canvas.setPointerCapture(e.pointerId); } catch (_) { }
@@ -1571,7 +1772,7 @@ const PHYS = (function () {
       else if (e.key === 'Escape' && S.started) startPlay();
       return;
     }
-    if (e.key === 'Escape') { openMenu(); return; }
+    if (e.key === 'Escape') { if (S.replay) { stopReplay(); return; } openMenu(); return; }
     if (e.key === 'Shift') keys.Shift = true;
     if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) { keys[e.key] = true; e.preventDefault(); return; }
     if (e.key === ' ' || e.key === 'Enter') {
@@ -1589,11 +1790,14 @@ const PHYS = (function () {
 
   function toggleView() { if (S.state === 'place') return; S.top = !S.top; if (!S.top) S.camYaw = S.aim; updateHUD(); }
   function toggleGuide() { S.guide = !S.guide; updateHUD(); updateSettingsUI(); }
-  function toggleSound() { S.sound = !S.sound; ensureAudio(); updateHUD(); updateSettingsUI(); try { localStorage.setItem('pool8.snd', S.sound ? '1' : '0'); } catch (_) { } }
+  function toggleMusic() { S.music = !S.music; ensureAudio(); syncMusic(); updateSettingsUI(); try { localStorage.setItem('pool8.music', S.music ? '1' : '0'); } catch (_) { } }
+  function toggleCine() { S.cine = !S.cine; updateSettingsUI(); try { localStorage.setItem('pool8.cine', S.cine ? '1' : '0'); } catch (_) { } }
+  function toggleSound() { S.sound = !S.sound; ensureAudio(); syncMusic(); updateHUD(); updateSettingsUI(); try { localStorage.setItem('pool8.snd', S.sound ? '1' : '0'); } catch (_) { } }
   $('btn-view').onclick = toggleView;
   $('btn-guide').onclick = toggleGuide;
   $('btn-sound').onclick = toggleSound;
   $('btn-undo').onclick = undoShot;
+  $('btn-replay').onclick = () => { if (S.replay) stopReplay(); else startReplay(); };
   $('btn-new').onclick = () => { if (!S.mp) resetRack(true); };
   $('shoot').onclick = () => { ensureAudio(); if (S.state === 'aim') startShot(); else if (S.state === 'place') confirmPlace(); };
 
@@ -1653,12 +1857,38 @@ const PHYS = (function () {
     }
   }
 
+  /* ---------------- Statistik ---------------- */
+  const ST_KEY = 'pool8.stats';
+  let ST = { shots: 0, pots: 0, fouls: 0, bestStreak: 0, runs: 0, mpPlayed: 0, mpWon: 0, since: Date.now() };
+  try { const j = JSON.parse(localStorage.getItem(ST_KEY)); if (j && typeof j === 'object') ST = Object.assign(ST, j); } catch (_) { }
+  function saveST() { try { localStorage.setItem(ST_KEY, JSON.stringify(ST)); } catch (_) { } }
+  function statShot(good, foul) { ST.shots++; if (good) ST.pots++; if (foul) ST.fouls++; ST.bestStreak = Math.max(ST.bestStreak, S.streak); saveST(); }
+
   /* ---------------- Spellägen ---------------- */
+  const STRAIGHT_TARGET = 25;
   const MODES = [
     { id: 'free', name: 'Fri övning', desc: '8-ball med riktiga regler, utan motståndare.' },
     { id: 'clear', name: 'Rensa bordet', desc: 'Sänk alla 15 bollar på så få skott som möjligt. Vit boll i hål ger +1 skott.' },
-    { id: 'oneball', name: 'Träna på en boll', desc: '10 rundor med en boll åt gången. Tre försök per boll.' }
+    { id: 'oneball', name: 'Träna på en boll', desc: '10 rundor med en boll åt gången. Tre försök per boll.' },
+    { id: 'nine', name: '9-ball', desc: 'Träffa alltid lägsta bollen först och sänk nian. Så få skott som möjligt.' },
+    { id: 'straight', name: 'Straight pool', desc: 'Valfri boll i valfri ficka: +1 per boll, −1 för foul. Spela till ' + STRAIGHT_TARGET + ' poäng, racket fylls på automatiskt.' }
   ];
+  const CHALS = [
+    { id: 'c1', name: 'Rakt på', desc: 'Sänk bollen rakt i hörnfickan.', kind: 'drill', drill: 0, stars: [1, 2, 4], unit: 'skott' },
+    { id: 'c2', name: 'Skär den', desc: 'Snedskott mot hörnfickan.', kind: 'drill', drill: 1, stars: [1, 2, 4], unit: 'skott' },
+    { id: 'c3', name: 'Trång ficka', desc: 'Sidofickan förlåter lite.', kind: 'drill', drill: 2, stars: [1, 3, 5], unit: 'skott' },
+    { id: 'c4', name: 'Hörnrunda', desc: 'Sex bollar, en vid varje ficka.', kind: 'drill', drill: 3, stars: [7, 10, 14], unit: 'skott' },
+    { id: 'c5', name: 'Trion', desc: 'Tre bollar på rad.', kind: 'drill', drill: 4, stars: [3, 5, 8], unit: 'skott' },
+    { id: 'c6', name: 'Slutspelet', desc: 'Fyra utspridda bollar.', kind: 'drill', drill: 5, stars: [4, 6, 9], unit: 'skott' },
+    { id: 'c7', name: 'Precision', desc: 'Sänk så många som möjligt av 10 bollar (tre försök var).', kind: 'oneball', stars: [9, 7, 5], higher: true, unit: 'av 10' },
+    { id: 'c8', name: 'Serien', desc: '15 bollar utspridda. Sänk så många du kan i rad – första missen avslutar.', kind: 'streak', stars: [8, 5, 3], higher: true, unit: 'i rad' },
+    { id: 'c9', name: 'Niaren', desc: 'Rensa 9-ball-bordet och sänk nian.', kind: 'nine', stars: [8, 12, 20], unit: 'skott' }
+  ];
+  const chalStars = i => { try { return parseInt(localStorage.getItem('pool8.chal.' + CHALS[i].id) || '0', 10) || 0; } catch (_) { return 0; } };
+  const chalUnlocked = i => i === 0 || chalStars(i - 1) >= 1;
+  const starsFor = (c, v) => { const s = c.stars; return c.higher ? (v >= s[0] ? 3 : v >= s[1] ? 2 : v >= s[2] ? 1 : 0) : (v <= s[0] ? 3 : v <= s[1] ? 2 : v <= s[2] ? 1 : 0); };
+  const starTxt = n => '★★★'.slice(0, n) + '☆☆☆'.slice(0, 3 - n);
+
   function bestKey(m, d) { return 'pool8.best.' + m + (m === 'drill' ? '.' + P.DRILLS[d].id : ''); }
   function getBest(m, d) { try { const v = localStorage.getItem(bestKey(m, d)); return v === null ? null : parseInt(v, 10); } catch (_) { return null; } }
   function setBest(m, d, val, higher) {
@@ -1666,17 +1896,36 @@ const PHYS = (function () {
     if (b === null || (higher ? val > b : val < b)) { try { localStorage.setItem(bestKey(m, d), String(val)); } catch (_) { } return true; }
     return false;
   }
+  /* spöke: din bästa körning, jämförs skott för skott */
+  const GHOSTED = ['clear', 'drill', 'nine'];
+  function ghostKey() { return 'pool8.ghost.' + (S.mode === 'chal' ? 'c.' + S.chal.id : S.mode === 'drill' ? 'd.' + P.DRILLS[S.drill].id : S.mode); }
+  function getGhost() { if (!GHOSTED.includes(S.rule)) return null; try { const g = JSON.parse(localStorage.getItem(ghostKey())); return g && Array.isArray(g.log) ? g : null; } catch (_) { return null; } }
+  function saveGhost() { if (!GHOSTED.includes(S.rule)) return; const g = getGhost(); if (!g || S.shots < g.n) { try { localStorage.setItem(ghostKey(), JSON.stringify({ n: S.shots, log: S.runLog.slice(0, 80) })); } catch (_) { } } }
+  function ghostTxt() {
+    const g = S.ghost; if (!g) return '';
+    if (S.shots === 0) return ' · Spöke: ' + g.n + ' skott';
+    const v = g.log[Math.min(S.shots, g.log.length) - 1];
+    return ' · Spöke: ' + (v === undefined ? 0 : v) + ' kvar';
+  }
   function objectsLeft() { return S.balls.filter(b => b.id > 0 && !b.out).length; }
+  function lowestBall() { let m = 99; for (const b of S.balls) if (b.id > 0 && !b.out && b.id < m) m = b.id; return m; }
   function modeLabel() {
-    if (S.mode === 'clear') return 'Rensa bordet · ' + objectsLeft() + ' kvar';
-    if (S.mode === 'drill') return P.DRILLS[S.drill].name + ' · ' + objectsLeft() + ' kvar';
-    if (S.mode === 'oneball') return 'Runda ' + Math.min(S.round, 10) + '/10 · Poäng ' + S.score + ' · Försök ' + Math.min(S.attempts + 1, 3) + '/3';
+    const pre = S.mode === 'chal' ? S.chal.name + ' · ' : '';
+    switch (S.rule) {
+      case 'clear': return 'Rensa bordet · ' + objectsLeft() + ' kvar' + ghostTxt();
+      case 'drill': return pre + P.DRILLS[S.drill].name + ' · ' + objectsLeft() + ' kvar' + ghostTxt();
+      case 'oneball': return pre + 'Runda ' + Math.min(S.round, 10) + '/10 · Poäng ' + S.score + ' · Försök ' + Math.min(S.attempts + 1, 3) + '/3';
+      case 'nine': return pre + '9-ball · lägsta: ' + lowestBall() + ' · ' + objectsLeft() + ' kvar' + ghostTxt();
+      case 'straight': return 'Straight pool · ' + S.score + ' / ' + STRAIGHT_TARGET + ' poäng · ' + objectsLeft() + ' kvar';
+      case 'streak': return pre + 'Serie: ' + S.streak + ' i rad · ' + objectsLeft() + ' kvar';
+    }
     return '';
   }
-  function modeName() { return S.mode === 'drill' ? P.DRILLS[S.drill].name : MODES.find(m => m.id === S.mode).name; }
+  function modeName() { return S.mode === 'chal' ? 'Utmaning: ' + S.chal.name : S.mode === 'drill' ? P.DRILLS[S.drill].name : MODES.find(m => m.id === S.mode).name; }
   function clearTable(keep) {
     for (const b of S.balls) { b.out = b.id !== 0 && !keep.includes(b.id); b.vx = b.vz = b.wx = b.wy = b.wz = 0; b.sink = null; b.pocket = undefined; }
   }
+  function syncVis() { for (let i = 0; i < 16; i++) { meshes[i].visible = !S.balls[i].out; blobs[i].visible = !S.balls[i].out; } }
   function applyDrill(i) {
     const m = P.DRILLS[i].make();
     clearTable(m.balls.map(b => b[0]));
@@ -1694,9 +1943,35 @@ const PHYS = (function () {
       if (Math.hypot(o.x - c.x, o.z - c.z) > 35) break;
     }
     S.aim = Math.atan2(o.z - c.z, o.x - c.x); S.camYaw = S.aim;
-    S.state = 'aim';
-    for (let i = 0; i < 16; i++) { meshes[i].visible = !S.balls[i].out; blobs[i].visible = !S.balls[i].out; }
+    S.state = 'aim'; syncVis();
     S.camTarget.set(c.x, R, c.z);
+  }
+  function spawnScatter() {
+    clearTable([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+    const placed = [], c = cue(); c.out = false;
+    const ok = (x, z) => placed.every(p => Math.hypot(p[0] - x, p[1] - z) > 2 * R + 2.5) && P.POCKETS.every(k => Math.hypot(k.x - x, k.z - z) > 11);
+    const put = (b) => { for (let k = 0; k < 400; k++) { const x = rnd(-HX + 8, HX - 8), z = rnd(-HZ + 8, HZ - 8); if (ok(x, z)) { b.x = x; b.z = z; placed.push([x, z]); return; } } placed.push([b.x, b.z]); };
+    put(c); for (let i = 1; i <= 15; i++) put(S.balls[i]);
+    let best = null, bd = 1e9;
+    for (let i = 1; i <= 15; i++) { const b = S.balls[i], d = Math.hypot(b.x - c.x, b.z - c.z); if (d < bd) { bd = d; best = b; } }
+    S.aim = Math.atan2(best.z - c.z, best.x - c.x); S.camYaw = S.aim;
+    S.state = 'aim'; syncVis(); S.camTarget.set(c.x, R, c.z);
+  }
+  function respotNine() {
+    const b = S.balls[9]; b.out = false; b.vx = b.vz = b.wx = b.wy = b.wz = 0; b.sink = null; b.pocket = undefined;
+    b.x = HX / 2; b.z = 0; let k = 0;
+    while (S.balls.some(o => o !== b && !o.out && Math.hypot(o.x - b.x, o.z - b.z) < 2 * R + 0.1) && k++ < 40) { b.x += 2 * R + 0.2; if (b.x > HX - 8) { b.x = HX / 2; b.z += 2 * R + 0.2; } }
+    meshes[9].visible = true; blobs[9].visible = true;
+  }
+  function rerackStraight() {
+    const rem = S.balls.find(b => b.id > 0 && !b.out);
+    const pos = P.makeRack().filter(b => b.id > 0).map(b => [b.x, b.z]).sort((a, b) => a[0] - b[0]);
+    let skip = 0;
+    if (rem) { let bd = 1e9; pos.forEach((p, i) => { const d = Math.hypot(p[0] - rem.x, p[1] - rem.z); if (d < bd) { bd = d; if (d < 2 * R + 0.6) skip = i; } }); }
+    const use = rem ? pos.filter((_, i) => i !== skip) : pos;
+    S.balls.filter(b => b.id > 0 && b !== rem).forEach((b, i) => { b.out = false; b.x = use[i][0]; b.z = use[i][1]; b.vx = b.vz = b.wx = b.wy = b.wz = 0; b.sink = null; b.pocket = undefined; });
+    const c = cue(); if (!P.legalPlacement(S.balls, c.x, c.z)) { c.x = -HX / 2; c.z = 0; }
+    syncVis();
   }
   function modeDone(title, text) {
     S.over = true; updateHUD();
@@ -1706,13 +1981,35 @@ const PHYS = (function () {
       { label: 'Spela igen', primary: true, fn: () => resetRack(true) }
     ]);
   }
+  function chalFinish(v) {
+    const c = S.chal, n = starsFor(c, v), prev = chalStars(CHALS.indexOf(c));
+    if (n > prev) { try { localStorage.setItem('pool8.chal.' + c.id, String(n)); } catch (_) { } }
+    ST.runs++; saveST(); saveGhost();
+    S.over = true; updateHUD();
+    const idx = CHALS.indexOf(c), next = CHALS[idx + 1] && n >= 1;
+    const [a, b, d] = c.stars;
+    showModal(n ? starTxt(n) + ' Klarat!' : 'Inte riktigt…', v + ' ' + c.unit + '. ' + (c.higher ? '3 stjärnor: ' + a + '+, 2: ' + b + '+, 1: ' + d + '+.' : '3 stjärnor: ≤' + a + ', 2: ≤' + b + ', 1: ≤' + d + '.'),
+      [{ label: 'Utmaningar', fn: () => { hideModal(); openMenu(); showSub('chal'); } }, { label: 'Försök igen', primary: !next, fn: () => resetRack(true) }].concat(next ? [{ label: 'Nästa utmaning', primary: true, fn: () => setMode('chal', idx + 1) }] : []));
+  }
+  function finishRun(value, title, text) {
+    if (S.mode === 'chal') { chalFinish(value); return; }
+    ST.runs++; saveST(); saveGhost();
+    modeDone(title, text);
+  }
   function finishShotAlt() {
-    const pot = S.shot.pocketed.filter(id => id !== 0), cueIn = S.shot.pocketed.includes(0);
+    const rule = S.rule, shot = S.shot;
+    const pot = shot.pocketed.filter(id => id !== 0), cueIn = shot.pocketed.includes(0);
+    let foul = cueIn, reasons = cueIn ? ['Vita bollen i hål'] : [], good = pot.length > 0 && !cueIn, ev = null;
+    if (rule === 'nine') { ev = P.evaluate9(shot); foul = ev.foul; reasons = ev.reasons; good = !ev.foul && ev.legalPots > 0; }
+    else if (rule === 'straight') { ev = P.evaluateStraight(shot); foul = ev.foul; reasons = ev.reasons; good = !ev.foul && ev.legalPots > 0; S.score += ev.points; }
     S.shots++; S.shot = null; S.state = 'aim';
-    const good = pot.length > 0 && !cueIn;
-    if (cueIn) { S.fouls++; S.streak = 0; if (S.mode !== 'oneball') S.shots++; }
+    const penalty = cueIn && (rule === 'clear' || rule === 'drill' || rule === 'streak');
+    if (penalty) S.shots++;
+    const runStreak = S.streak;
+    if (foul) { S.fouls++; S.streak = 0; }
     else if (good) { S.streak++; S.best = Math.max(S.best, S.streak); S.good++; }
     else S.streak = 0;
+    statShot(good, foul);
     const c = cue();
     if (c.out) {
       c.out = false; c.sink = null; c.vx = c.vz = c.wx = c.wy = c.wz = 0; c.x = -HX / 2; c.z = 0;
@@ -1720,31 +2017,60 @@ const PHYS = (function () {
       while (!P.legalPlacement(S.balls, c.x, c.z) && tries++ < 400) { c.x = rnd(-HX + 6, HX - 6); c.z = rnd(-HZ + 6, HZ - 6); }
       meshes[0].visible = true; blobs[0].visible = true;
     }
+    if (ev && ev.respot9) respotNine();
+    S.runLog.push(objectsLeft());
     let newLayout = false;
-    if (S.mode === 'oneball') {
+    const hand = (rule === 'nine' || rule === 'straight') ? foul : cueIn;
+    if (rule === 'oneball') {
       if (good) { S.score++; S.round++; S.attempts = 0; newLayout = true; toast('Bra! Boll i hål.', 'good', 1800); }
       else { S.attempts++; if (S.attempts >= 3) { S.round++; S.attempts = 0; newLayout = true; toast('Inga försök kvar – nästa runda.', 'bad', 2000); } else toast(cueIn ? 'Vita bollen i hål.' : 'Miss. Försök igen.', cueIn ? 'bad' : '', 1800); }
       if (S.round > 10) {
+        if (S.mode === 'chal') { chalFinish(S.score); return; }
         const nb = setBest('oneball', 0, S.score, true), b = getBest('oneball', 0);
-        modeDone('Klart! ' + S.score + ' / 10', (nb ? 'Nytt rekord!' : 'Ditt rekord: ' + b + ' / 10.') + ' Träffprocent: ' + Math.round(100 * S.good / S.shots) + '%.');
+        finishRun(S.score, 'Klart! ' + S.score + ' / 10', (nb ? 'Nytt rekord!' : 'Ditt rekord: ' + b + ' / 10.') + ' Träffprocent: ' + Math.round(100 * S.good / S.shots) + '%.');
         return;
       }
       if (newLayout) spawnOneBall();
+    } else if (rule === 'streak') {
+      const fin = good ? S.streak : runStreak;
+      if (!good || objectsLeft() === 0) { chalFinish(fin); return; }
+      toast(S.streak + ' i rad – fortsätt!', 'good', 1500);
+    } else if (rule === 'nine') {
+      if (ev.win) {
+        const nb = setBest('nine', 0, S.shots, false), b = getBest('nine', 0);
+        finishRun(S.shots, 'Niaren i hål på ' + S.shots + ' skott!', (nb ? 'Nytt rekord! ' : 'Ditt rekord: ' + b + ' skott. ') + (S.fouls ? S.fouls + ' foul.' : 'Utan foul.'));
+        return;
+      }
+      if (foul) toast('Foul: ' + reasons.join(' · ') + '. Boll i hand!' + (ev.respot9 ? ' Nian läggs tillbaka.' : ''), 'bad', 4500);
+      else toast(good ? pot.length + (pot.length === 1 ? ' boll i hål – ' : ' bollar i hål – ') + 'fortsätt!' : 'Ingen boll i hål.', good ? 'good' : '', 2000);
+    } else if (rule === 'straight') {
+      if (S.score >= STRAIGHT_TARGET) {
+        const nb = setBest('straight', 0, S.shots, false), b = getBest('straight', 0);
+        finishRun(S.shots, STRAIGHT_TARGET + ' poäng på ' + S.shots + ' skott!', (nb ? 'Nytt rekord! ' : 'Ditt rekord: ' + b + ' skott. ') + S.fouls + ' foul.');
+        return;
+      }
+      if (objectsLeft() <= 1) { rerackStraight(); toast('Nytt rack!', 'good', 2200); }
+      else if (foul) toast('Foul: ' + reasons.join(' · ') + '. −1 poäng, boll i hand.', 'bad', 3500);
+      else toast(good ? '+' + ev.points + (ev.points === 1 ? ' poäng' : ' poäng') : 'Ingen boll i hål.', good ? 'good' : '', 1800);
     } else if (objectsLeft() === 0) {
-      if (S.mode === 'clear') S.cleared++;
-      const nb = setBest(S.mode, S.drill, S.shots, false), b = getBest(S.mode, S.drill);
-      modeDone('Klarat på ' + S.shots + ' skott', (nb ? 'Nytt rekord! ' : 'Ditt rekord: ' + b + ' skott. ') + (S.fouls ? S.fouls + ' foul (+1 skott var).' : 'Utan foul.'));
+      if (S.mode !== 'chal') {
+        if (rule === 'clear') S.cleared++;
+        const nb = setBest(S.mode, S.drill, S.shots, false), b = getBest(S.mode, S.drill);
+        finishRun(S.shots, 'Klarat på ' + S.shots + ' skott', (nb ? 'Nytt rekord! ' : 'Ditt rekord: ' + b + ' skott. ') + (S.fouls ? S.fouls + ' foul (+1 skott var).' : 'Utan foul.'));
+      } else chalFinish(S.shots);
       return;
     } else if (!cueIn) {
       toast(good ? (pot.length + (pot.length === 1 ? ' boll i hål – ' : ' bollar i hål – ') + objectsLeft() + ' kvar.') : 'Ingen boll i hål.', good ? 'good' : '', 2000);
     }
-    if (cueIn && !newLayout) { enterPlace(); toast('Vita bollen i hål – boll i hand!' + (S.mode !== 'oneball' ? ' (+1 skott)' : ''), 'bad', 3500); }
+    if (hand && !newLayout && rule !== 'streak') { enterPlace(); if (rule !== 'nine' && rule !== 'straight') toast('Vita bollen i hål – boll i hand!' + (penalty ? ' (+1 skott)' : ''), 'bad', 3500); }
     S.camTarget.set(cue().x, R, cue().z);
     updateHUD();
   }
   function setMode(m, d) {
     if (S.mp) mpLeave(true);
-    S.mode = m; S.drill = d || 0;
+    S.mode = m; S.drill = 0; S.chal = null; S.rule = m;
+    if (m === 'drill') S.drill = d || 0;
+    if (m === 'chal') { S.chal = CHALS[d || 0]; S.rule = S.chal.kind; if (S.rule === 'drill') S.drill = S.chal.drill; }
     $('h-modename').textContent = modeName();
     resetRack(true); startPlay();
   }
@@ -1763,10 +2089,44 @@ const PHYS = (function () {
     const grid = document.createElement('div'); grid.className = 'mgrid'; wrap.appendChild(grid);
     P.DRILLS.forEach((d, i) => { const bv = getBest('drill', i); card(d.name, d.desc, bv === null ? '' : 'Rekord ' + bv, () => setMode('drill', i), grid); });
   }
+  function buildChalUI() {
+    const wrap = $('challist'); wrap.innerHTML = '';
+    let tot = 0; CHALS.forEach((_, i) => tot += chalStars(i));
+    $('chal-total').textContent = 'Stjärnor: ' + tot + ' / ' + CHALS.length * 3 + '. Klara en utmaning med minst en stjärna för att låsa upp nästa.';
+    CHALS.forEach((c, i) => {
+      const open = chalUnlocked(i), n = chalStars(i);
+      const b = document.createElement('button'); b.className = 'mcard'; b.disabled = !open;
+      if (!open) b.style.opacity = '.45';
+      const bt = document.createElement('b'); bt.textContent = (open ? '' : '🔒 ') + (i + 1) + '. ' + c.name;
+      const em = document.createElement('em'); em.textContent = starTxt(n); bt.appendChild(em);
+      const sp = document.createElement('span'); sp.textContent = c.desc + ' (' + (c.higher ? '3★ ≥ ' : '3★ ≤ ') + c.stars[0] + ' ' + c.unit + ')';
+      b.appendChild(bt); b.appendChild(sp); b.onclick = () => setMode('chal', i); wrap.appendChild(b);
+    });
+  }
+  function spinFx() {
+    const a = S.sa, b = S.sb, f = [];
+    if (b > 0.2) f.push('Följ: vita rullar framåt efter träffen'); else if (b < -0.2) f.push('Back: vita drar tillbaka efter träffen');
+    if (a > 0.2) f.push('Högereffekt: styr åt höger vid kudden'); else if (a < -0.2) f.push('Vänstereffekt: styr åt vänster vid kudden');
+    return f.length ? f.join(' · ') : 'Mitten: ren träff';
+  }
+  let statArm = false;
+  function buildStatsUI() {
+    const wrap = $('statlist'); wrap.innerHTML = ''; statArm = false; $('stat-reset').textContent = 'Nollställ statistik';
+    let tot = 0; CHALS.forEach((_, i) => tot += chalStars(i));
+    const rows = [
+      ['Skott totalt', ST.shots], ['Bollar sänkta', ST.pots], ['Träffprocent', ST.shots ? Math.round(100 * ST.pots / ST.shots) + '%' : '–'],
+      ['Foul', ST.fouls], ['Längsta serie', ST.bestStreak], ['Klarade banor och bord', ST.runs],
+      ['Online: spelade matcher', ST.mpPlayed], ['Online: vunna', ST.mpWon], ['Utmaningsstjärnor', tot + ' / ' + CHALS.length * 3]
+    ];
+    const rec = [['Rensa bordet', getBest('clear', 0), 'skott'], ['9-ball', getBest('nine', 0), 'skott'], ['Straight pool (' + STRAIGHT_TARGET + ')', getBest('straight', 0), 'skott'], ['Träna på en boll', getBest('oneball', 0), '/ 10']];
+    rows.forEach(([k, v]) => { const d = document.createElement('div'); d.className = 'strow'; const a = document.createElement('span'); a.textContent = k; const b = document.createElement('b'); b.textContent = v; d.appendChild(a); d.appendChild(b); wrap.appendChild(d); });
+    const h = document.createElement('h3'); h.textContent = 'Personliga rekord'; wrap.appendChild(h);
+    rec.forEach(([k, v, u]) => { const d = document.createElement('div'); d.className = 'strow'; const a = document.createElement('span'); a.textContent = k; const b = document.createElement('b'); b.textContent = v === null ? '–' : v + ' ' + u; d.appendChild(a); d.appendChild(b); wrap.appendChild(d); });
+  }
 
   /* ---------------- Flerspelare (turordnat, via rum) ---------------- */
   const MP_ALPHA = 'abcdefghjkmnpqrstuvwxyz23456789';
-  let mpNameVal = 'Spelare';
+  let mpNameVal = 'Spelare', mpClockSel = 0;
   try { mpNameVal = localStorage.getItem('pool8.name') || 'Spelare'; } catch (_) { }
   function mpClean(n) { return String(n || '').replace(/[^\p{L}\p{N} _.-]/gu, '').trim().slice(0, 16) || 'Spelare'; }
   function mpCode() { let s = ''; for (let i = 0; i < 5; i++) s += MP_ALPHA[Math.floor(Math.random() * MP_ALPHA.length)]; return s; }
@@ -1794,11 +2154,12 @@ const PHYS = (function () {
   function mpLabel() {
     const mp = S.mp, G = mp.G;
     if (!G) return 'Väntar på motspelare…';
+    const sc = G.score && (G.score[0] + G.score[1] > 0) ? ' · ' + (mp.seat < 0 ? G.score[0] + '–' + G.score[1] : G.score[mp.seat] + '–' + G.score[1 - mp.seat]) : '';
     const turn = mp.seat < 0 ? mpNameOf(G.players[G.turn]) + 's tur' : (mpMyTurn() ? 'DIN TUR' : mpNameOf(G.players[G.turn]).toUpperCase() + 'S TUR');
     const opp = mp.seat >= 0 ? G.players[1 - mp.seat] : null;
     const gone = opp && !mpPresent(opp) ? ' · motspelaren frånkopplad' : '';
     const grp = S.group ? ' · du: ' + P.nameOf(S.group) : (mp.seat >= 0 ? ' · öppet bord' : '');
-    return turn + grp + gone;
+    return turn + grp + sc + gone;
   }
   const ballsOut = () => S.balls.map(b => [+b.x.toFixed(2), +b.z.toFixed(2), b.out ? 1 : 0]);
   function mpEmit(topic, data) { S.mp.room.emit(topic, data).catch(() => { }); }
@@ -1817,6 +2178,7 @@ const PHYS = (function () {
     if (ev.k === 'pot') return mine ? 'Bra! Du sänkte ' + ev.c + (ev.c === 1 ? ' boll' : ' bollar') + '. Fortsätt!' : who + ' sänkte ' + ev.c + (ev.c === 1 ? ' boll' : ' bollar') + ' och fortsätter.';
     if (ev.k === 'miss') return mine ? 'Ingen boll i hål. Nu skjuter ' + opp + '.' : who + ' missade. Din tur!';
     if (ev.k === 'foul') return mine ? 'Foul: ' + r + '. ' + opp + ' får boll i hand.' : who + ' gjorde foul: ' + r + '. Du får boll i hand!';
+    if (ev.k === 'timeout') return mine ? 'Tiden tog slut! ' + opp + ' får boll i hand.' : who + ' hann inte skjuta. Du får boll i hand!';
     if (ev.k === 'start') return '';
     return '';
   }
@@ -1828,20 +2190,23 @@ const PHYS = (function () {
     for (let i = 0; i < 16; i++) { meshes[i].visible = !S.balls[i].out; blobs[i].visible = !S.balls[i].out; }
   }
   function mpApply(G) {
-    const mp = S.mp; mp.G = G; mp.pending = null; mp.waiting = false;
+    if (S.replay) stopReplay(true);
+    const mp = S.mp; mp.G = G; mp.pending = null; mp.waiting = false; mp.turnStart = performance.now(); mp.timedOut = false;
+    $('btn-chat').style.display = ''; $('clock').style.display = 'none';
     hideModal();
     mpBallsApply(G.balls);
     const mePeer = mp.room.peers().find(p => p.isMe && p.sameTab); if (mePeer) mp.me = mePeer.peer;
     mp.seat = G.players.indexOf(mp.me);
     S.group = mp.seat >= 0 ? G.groups[mp.seat] : null;
     S.oppGroup = mp.seat >= 0 ? G.groups[1 - mp.seat] : null;
-    S.shots = G.n; S.over = false; S.mode = 'free'; S.undo = null; S.shot = null; S.anim = null; S.follow = null; S.still = 0; S.acc = 0;
+    S.shots = G.n; S.over = false; S.mode = 'free'; S.rule = 'free'; S.chal = null; S.undo = null; S.shot = null; S.anim = null; S.follow = null; S.still = 0; S.acc = 0;
     const wasPlace = S.state === 'place';
     if (G.over) {
+      if (mp.seat >= 0 && mp.cnt !== G.e) { mp.cnt = G.e; ST.mpPlayed++; if (G.over.w === mp.seat) ST.mpWon++; saveST(); }
       S.over = true; S.state = 'watch';
       const winner = G.over.w === mp.seat;
       const title = mp.seat < 0 ? mpNameOf(G.players[G.over.w]) + ' vann' : (winner ? 'Du vann! 🎱' : mpNameOf(G.players[G.over.w]) + ' vann');
-      showModal(title, G.over.t || '', [{ label: 'Lämna rummet', fn: () => mpLeave(false) }].concat(mp.seat >= 0 ? [{ label: 'Spela igen', primary: true, fn: mpRematch }] : []));
+      showModal(title, (G.over.t || '') + (G.score ? ' Ställning: ' + (mp.seat >= 0 ? G.score[mp.seat] + '–' + G.score[1 - mp.seat] : G.score[0] + '–' + G.score[1]) + '.' : ''), [{ label: 'Lämna rummet', fn: () => mpLeave(false) }].concat(mp.seat >= 0 ? [{ label: 'Spela igen', primary: true, fn: mpRematch }] : []));
       updateHUD(); return;
     }
     const mine = mp.seat >= 0 && mp.seat === G.turn;
@@ -1866,12 +2231,12 @@ const PHYS = (function () {
     else if (G.n === 0) toast(mpNameOf(G.players[G.turn]) + ' bryter.', '', 3000);
     updateHUD();
   }
-  function mpNewRack(e, players, turn) {
-    return { e, n: 0, players, turn, groups: [null, null], balls: P.makeRack().map(b => [+b.x.toFixed(2), +b.z.toFixed(2), 0]), brk: true, hand: false, over: null, ev: null };
+  function mpNewRack(e, players, turn, clock, score) {
+    return { e, n: 0, players, turn, clock: clock || 0, score: score ? score.slice() : [0, 0], groups: [null, null], balls: P.makeRack().map(b => [+b.x.toFixed(2), +b.z.toFixed(2), 0]), brk: true, hand: false, over: null, ev: null };
   }
   function mpRematch() {
     const mp = S.mp, G = mp.G; if (!G || mp.seat < 0) return;
-    const g2 = mpNewRack(G.e + 1, G.players, (G.e + 1) % 2);
+    const g2 = mpNewRack(G.e + 1, G.players, (G.e + 1) % 2, G.clock, G.score);
     mpEmit('mp.state', g2); mpApply(g2);
   }
   function finishShotMp() {
@@ -1884,6 +2249,7 @@ const PHYS = (function () {
     const seat = G.turn;
     S.group = G.groups[seat];
     const res = P.evaluateShot({ group: S.group }, S.shot);
+    statShot(!res.foul && res.legalPots > 0, res.foul);
     S.shot = null;
     const c = cue();
     if (c.out) {
@@ -1893,13 +2259,14 @@ const PHYS = (function () {
     }
     const ng = Object.assign({}, G); ng.groups = G.groups.slice();
     if (!G.groups[seat] && res.newGroup) { ng.groups[seat] = res.newGroup; ng.groups[1 - seat] = res.newGroup === 'solid' ? 'stripe' : 'solid'; }
-    ng.n = G.n + 1; ng.brk = false; ng.hand = false; ng.over = null;
+    ng.n = G.n + 1; ng.brk = false; ng.hand = false; ng.over = null; ng.score = (G.score || [0, 0]).slice();
     const nm = mpSeatName(seat);
     if (res.win) { ng.over = { w: seat, t: (seat === mp.seat ? 'Du sänkte åttan' : mpSeatName(seat) + ' sänkte åttan') + ' efter ' + ng.n + ' skott.' }; ng.ev = { k: 'win', by: seat }; }
     else if (res.loss) { ng.over = { w: 1 - seat, t: nm + ' sänkte åttan för tidigt' + (res.reasons.length ? ' (' + res.reasons.join(' · ') + ')' : '') + '.' }; ng.ev = { k: 'loss', by: seat }; }
     else if (res.foul) { ng.turn = 1 - seat; ng.hand = true; ng.ev = { k: 'foul', by: seat, r: res.reasons }; }
     else if (res.legalPots > 0) { ng.turn = seat; ng.ev = { k: 'pot', by: seat, c: res.legalPots }; }
     else { ng.turn = 1 - seat; ng.ev = { k: 'miss', by: seat }; }
+    if (ng.over) ng.score[ng.over.w]++;
     ng.balls = ballsOut();
     mpEmit('mp.state', ng);
     mp.iShot = false;
@@ -1915,8 +2282,27 @@ const PHYS = (function () {
     if (pr.pl) { if (Number.isFinite(pr.cx) && Number.isFinite(pr.cz)) { c.x = pr.cx; c.z = pr.cz; } cueYaw.visible = false; }
     else { cueYaw.visible = true; placeCue(2.0); }
   }
+  function mpTimeout() {
+    const mp = S.mp, G = mp.G; if (!G || mp.timedOut) return;
+    mp.timedOut = true;
+    const ng = Object.assign({}, G); ng.groups = G.groups.slice(); ng.score = (G.score || [0, 0]).slice();
+    ng.n = G.n + 1; ng.turn = 1 - G.turn; ng.hand = true; ng.brk = false; ng.over = null; ng.ev = { k: 'timeout', by: G.turn };
+    mpEmit('mp.state', ng); mpApply(ng);
+  }
+  function mpClockTick() {
+    const mp = S.mp, G = mp.G, el = $('clock');
+    if (!G || !G.clock || G.over || mp.seat < 0) { el.style.display = 'none'; return; }
+    if (S.state === 'roll' || S.state === 'strike') { mp.turnStart = performance.now(); el.style.display = 'none'; return; }
+    const left = G.clock - (performance.now() - mp.turnStart) / 1000;
+    el.style.display = '';
+    el.textContent = '⏱ ' + Math.max(0, Math.ceil(left)) + ' s · ' + (mpMyTurn() ? 'din tur' : mpNameOf(G.players[G.turn]));
+    el.classList.toggle('low', left < 10);
+    if (mpMyTurn() && left <= 0) mpTimeout();
+    else if (!mpMyTurn() && left <= -10) mpTimeout();
+  }
   function mpTick() {
     const mp = S.mp; if (!mp.G) return;
+    mpClockTick();
     if (mpMyTurn() && (S.state === 'aim' || S.state === 'place')) {
       const c = cue();
       const sig = [S.aim.toFixed(3), S.power.toFixed(2), S.sa.toFixed(2), S.sb.toFixed(2), c.x.toFixed(1), c.z.toFixed(1), S.state].join('|');
@@ -1927,6 +2313,34 @@ const PHYS = (function () {
     }
     if (mp.waiting && performance.now() - mp.waitSince > 5000) { mp.waitSince = performance.now(); mpEmit('mp.req', { e: mp.G.e, n: mp.G.n }); }
   }
+  const CHAT_Q = ['Bra skott! 👏', 'Pech!', 'Snyggt!', 'Revansch?', 'GG', '😂', '😮', '🔥', '👍', '😭'];
+  function chatShow(name, txt, big) {
+    const log = $('chatlog'), d = document.createElement('div');
+    if (big) d.className = 'big';
+    if (name) { const b = document.createElement('b'); b.textContent = name + ':'; d.appendChild(b); }
+    d.appendChild(document.createTextNode(txt));
+    log.appendChild(d);
+    while (log.children.length > 5) log.removeChild(log.firstChild);
+    setTimeout(() => { if (d.parentNode) d.parentNode.removeChild(d); }, 9000);
+  }
+  let chatLast = 0;
+  function chatSend(txt) {
+    txt = String(txt || '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 60);
+    if (!txt || !S.mp) return;
+    const n = performance.now(); if (n - chatLast < 700) return; chatLast = n;
+    mpEmit('mp.chat', { s: txt });
+    chatShow('Du', txt, /^\p{Extended_Pictographic}{1,3}$/u.test(txt));
+  }
+  (function buildChat() {
+    const q = $('chat-q');
+    CHAT_Q.forEach(s => { const b = document.createElement('button'); b.textContent = s; b.onclick = () => chatSend(s); q.appendChild(b); });
+    $('chat-in').addEventListener('keydown', e => {
+      e.stopPropagation();
+      if (e.key === 'Enter') { chatSend($('chat-in').value); $('chat-in').value = ''; }
+      else if (e.key === 'Escape') { $('chat').classList.remove('show'); $('chat-in').blur(); }
+    });
+    $('btn-chat').onclick = () => { const c = $('chat'); c.classList.toggle('show'); if (c.classList.contains('show')) $('chat-in').focus(); };
+  })();
   function mpPeersChanged(ch) {
     const mp = S.mp; if (!mp) return;
     const me = mp.room.peers().find(p => p.isMe && p.sameTab); if (me) mp.me = me.peer;
@@ -1935,7 +2349,7 @@ const PHYS = (function () {
     if (!mp.G) {
       if (mp.host && viewers.length >= 2 && mp.me) {
         const other = viewers.find(p => p.peer !== mp.me);
-        const g = mpNewRack(1, [mp.me, other.peer], 0);
+        const g = mpNewRack(1, [mp.me, other.peer], 0, mp.clock0 || 0, [0, 0]);
         mpEmit('mp.state', g); mpApply(g); startPlay();
       } else if (mp.host) mpStatus('Väntar på att din vän går med…', mp.code);
       return;
@@ -1986,6 +2400,7 @@ const PHYS = (function () {
       const G = mp.G, d = m.data;
       if (!d || d.e !== G.e || d.n !== G.n + 1 || m.peer !== G.players[G.turn] || !Array.isArray(d.balls) || d.balls.length !== 16) return;
       if (S.state === 'roll' || S.state === 'strike') return;
+      if (S.replay) stopReplay(true);
       mpBallsApply(d.balls);
       S.aim = +d.aim || 0; S.power = clamp(+d.power || 0.5, 0.03, 1); S.sa = clamp(+d.sa || 0, -0.8, 0.8); S.sb = clamp(+d.sb || 0, -0.8, 0.8);
       S.state = 'aim'; S.breakPlace = false; S.over = false;
@@ -1995,6 +2410,13 @@ const PHYS = (function () {
       if (!S.mp || S.mp !== mp || m.isMe || !mp.G) return;
       if (mpOwner() && mp.state !== 'x') mpEmit('mp.state', mp.G);
     }));
+    mp.unsubs.push(room.on('mp.chat', m => {
+      if (!S.mp || S.mp !== mp || m.isMe) return;
+      const d = m.data; if (!d || typeof d.s !== 'string') return;
+      const s = d.s.replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 60); if (!s) return;
+      chatShow(mpNameOf(m.peer), s, /^\p{Extended_Pictographic}{1,3}$/u.test(s));
+    }));
+    mp.clock0 = mpClockSel;
     mp.unsubs.push(room.onPeers(ch => mpPeersChanged(ch)));
     await room.presence({ nm: mpNameVal, t: Date.now() }).catch(() => { });
     if (host) mpStatus('Väntar på att din vän går med. Be hen öppna spelet → Spela online → Gå med och skriva in koden.', code);
@@ -2005,7 +2427,8 @@ const PHYS = (function () {
     S.mp = null; S.oppGroup = null;
     try { mp.unsubs.forEach(u => u()); } catch (_) { }
     try { mp.room.leave().catch(() => { }); } catch (_) { }
-    S.mode = 'free'; S.group = null;
+    S.mode = 'free'; S.rule = 'free'; S.chal = null; S.group = null;
+    $('btn-chat').style.display = 'none'; $('chat').classList.remove('show'); $('chatlog').innerHTML = ''; $('clock').style.display = 'none';
     if (!silent) {
       hideModal(); resetRack(true); mpStatus('');
       if (S.menu) { showSub(null); $('h-leave').style.display = 'none'; $('h-modes').style.display = ''; $('h-new').style.display = S.started ? '' : 'none'; }
@@ -2040,6 +2463,8 @@ const PHYS = (function () {
   function updateSettingsUI() {
     document.querySelectorAll('#qseg button').forEach(b => b.classList.toggle('on', b.dataset.q === S.quality));
     $('h-snd').classList.toggle('on', S.sound); $('h-snd').textContent = 'Ljud: ' + (S.sound ? 'på' : 'av');
+    $('h-music').classList.toggle('on', S.music); $('h-music').textContent = 'Musik: ' + (S.music ? 'på' : 'av');
+    $('h-cine').classList.toggle('on', S.cine); $('h-cine').textContent = 'Filmisk kamera: ' + (S.cine ? 'på' : 'av');
     $('h-guide').classList.toggle('on', S.guide); $('h-guide').textContent = 'Siktlinje: ' + (S.guide ? 'på' : 'av');
   }
   function viewOffset() {
@@ -2055,7 +2480,7 @@ const PHYS = (function () {
     viewOffset();
   }
   function startPlay() {
-    S.menu = false; S.started = true; ensureAudio();
+    S.menu = false; S.started = true; ensureAudio(); syncMusic();
     document.body.classList.remove('inmenu'); $('home').classList.add('hide');
     viewOffset(); updateHUD();
     if (S.mode === 'free' && S.shots === 0 && S.state === 'place' && S.breakPlace) toast('Bryt racket! Placera vita bollen i det markerade området och tryck PLACERA HÄR.', '', 4500);
@@ -2067,14 +2492,24 @@ const PHYS = (function () {
     $('sub-cust').classList.toggle('show', id === 'cust');
     $('sub-modes').classList.toggle('show', id === 'modes');
     $('sub-mp').classList.toggle('show', id === 'mp');
+    $('sub-chal').classList.toggle('show', id === 'chal');
+    $('sub-learn').classList.toggle('show', id === 'learn');
+    $('sub-stats').classList.toggle('show', id === 'stats');
+    if (id === 'chal') buildChalUI();
+    if (id === 'stats') buildStatsUI();
     if (id === 'modes') buildModeUI();
     S.custom = (id === 'cust'); shadowForce = 3;
   }
   $('h-play').onclick = startPlay;
   $('h-new').onclick = () => { if (!S.mp) { resetRack(true); startPlay(); } };
   $('h-how').onclick = () => showSub('how');
+  $('h-chal').onclick = () => showSub('chal');
+  $('h-learn').onclick = () => showSub('learn');
+  $('h-stats').onclick = () => showSub('stats');
+  $('stat-reset').onclick = () => { if (!statArm) { statArm = true; $('stat-reset').textContent = 'Tryck igen för att bekräfta'; return; } ST = { shots: 0, pots: 0, fouls: 0, bestStreak: 0, runs: 0, mpPlayed: 0, mpWon: 0, since: Date.now() }; saveST(); buildStatsUI(); };
   $('h-cust').onclick = () => showSub('cust');
   $('h-modes').onclick = () => showSub('modes');
+  document.querySelectorAll('#mp-clockseg button').forEach(b => { b.onclick = () => { mpClockSel = +b.dataset.c; document.querySelectorAll('#mp-clockseg button').forEach(x => x.classList.toggle('on', x === b)); }; });
   $('h-mp').onclick = () => { $('mp-name').value = mpNameVal; showSub('mp'); };
   $('h-leave').onclick = () => { mpLeave(false); };
   $('mp-create').onclick = () => mpJoin(mpCode(), true);
@@ -2085,6 +2520,8 @@ const PHYS = (function () {
   document.querySelectorAll('#qseg button').forEach(b => { b.onclick = () => applyQuality(b.dataset.q, true); });
   $('h-snd').onclick = toggleSound;
   $('h-guide').onclick = toggleGuide;
+  $('h-music').onclick = toggleMusic;
+  $('h-cine').onclick = toggleCine;
   $('btn-menu').onclick = openMenu;
   window.addEventListener('resize', viewOffset);
 
@@ -2217,7 +2654,7 @@ const PHYS = (function () {
     software = /swiftshader|basic render|llvmpipe|softpipe|software/i.test(nm);
   } catch (_) { }
   let savedQ = null;
-  try { savedQ = localStorage.getItem('pool8.q'); const sn = localStorage.getItem('pool8.snd'); if (sn === '0') S.sound = false; } catch (_) { }
+  try { savedQ = localStorage.getItem('pool8.q'); const sn = localStorage.getItem('pool8.snd'); if (sn === '0') S.sound = false; if (localStorage.getItem('pool8.music') === '1') S.music = true; if (localStorage.getItem('pool8.cine') === '0') S.cine = false; } catch (_) { }
   if (software) $('hwwarn').classList.add('show');
   let savedT = 0, savedC = 0;
   try { savedT = parseInt(localStorage.getItem('pool8.table') || '0', 10) || 0; savedC = parseInt(localStorage.getItem('pool8.cue') || '0', 10) || 0; } catch (_) { }
