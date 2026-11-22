@@ -44,6 +44,33 @@ function clean(d) {
   }
   return o;
 }
+
+/* ---- krediter och butik (servern avgör saldo och köp) ---- */
+const TABLE_IDS = ['classic', 'tournament', 'burgundy', 'midnight', 'nordic', 'argyle', 'striped', 'checkered', 'custom'];
+const CUE_IDS = ['classic', 'midnight', 'maple', 'crimson', 'charcoal', 'neon', 'ivory', 'violet', 'custom'];
+const WIN_CREDITS = 100, MIN_WIN_GAP = 40000, MAX_WINS_DAY = 40;
+function price(item) {
+  const m = /^([TC]):([a-z]+)$/.exec(String(item || '')); if (!m) return null;
+  if (m[1] === 'T') return TABLE_IDS.includes(m[2]) ? (m[2] === 'classic' ? 0 : 1000) : null;
+  return CUE_IDS.includes(m[2]) ? (m[2] === 'classic' ? 0 : 5000) : null;
+}
+const eco = u => ({ credits: u.credits | 0, owned: Object.keys(u.owned || {}) });
+const pend = new Map(), done = new Map();
+setInterval(() => { const now = Date.now(); for (const [k, v] of pend) if (now - v.t > 900000) pend.delete(k); for (const [k, t] of done) if (now - t > 86400000) done.delete(k); }, 300000);
+// en vinst räknas först när både vinnaren (w) och förloraren (l), två olika konton, rapporterat samma match
+function report(u, mid, res) {
+  if (!/^[a-zA-Z0-9_.:-]{1,64}$/.test(mid) || (res !== 'w' && res !== 'l') || done.has(mid)) return false;
+  let p = pend.get(mid); if (!p) pend.set(mid, p = { t: Date.now(), w: null, l: null });
+  p[res] = u.name.toLowerCase();
+  if (!p.w || !p.l || p.w === p.l) return false;
+  pend.delete(mid); done.set(mid, Date.now());
+  const winner = users[p.w]; if (!winner) return false;
+  const day = new Date().toISOString().slice(0, 10), now = Date.now();
+  if (!winner.day || winner.day.d !== day) winner.day = { d: day, n: 0 };
+  if (winner.day.n >= MAX_WINS_DAY || now - (winner.lastWin || 0) < MIN_WIN_GAP) return false;
+  winner.day.n++; winner.lastWin = now; winner.credits = (winner.credits | 0) + WIN_CREDITS; persist();
+  return true;
+}
 function readBody(req, cb) {
   let n = 0; const ch = [];
   req.on('data', d => { n += d.length; if (n > 600000) { req.destroy(); return; } ch.push(d); });
@@ -84,16 +111,26 @@ function api(req, res, p) {
           if (u) return json(res, 409, { err: 'taken' });
           if (Object.keys(users).length >= 5000) return json(res, 503, { err: 'full' });
           const salt = crypto.randomBytes(16).toString('hex');
-          u = users[key] = { name, salt, hash: await scrypt(pw, salt), created: Date.now(), data: {}, upd: 0 }; persist();
+          u = users[key] = { name, salt, hash: await scrypt(pw, salt), created: Date.now(), data: {}, upd: 0, credits: 0, owned: {} }; persist();
         } else {
           const h = u ? await scrypt(pw, u.salt) : null;
           if (!u || h.length !== u.hash.length || !crypto.timingSafeEqual(Buffer.from(h), Buffer.from(u.hash))) return json(res, 401, { err: 'bad_login' });
         }
-        return json(res, 200, { token: mkToken(u.name), name: u.name, data: u.data, upd: u.upd });
+        return json(res, 200, { token: mkToken(u.name), name: u.name, data: u.data, upd: u.upd, eco: eco(u) });
       }
       const u = verToken(m.token);
       if (!u) return json(res, 401, { err: 'auth' });
-      if (p === '/api/me') return json(res, 200, { name: u.name, data: u.data, upd: u.upd });
+      if (p === '/api/me') return json(res, 200, { name: u.name, data: u.data, upd: u.upd, eco: eco(u) });
+      if (p === '/api/result') { const ok = report(u, String(m.mid || ''), m.res); return json(res, 200, { ok: 1, credited: ok, eco: eco(u) }); }
+      if (p === '/api/buy') {
+        const item = String(m.item || ''), pr = price(item);
+        if (pr === null) return json(res, 400, { err: 'bad_item' });
+        u.owned = u.owned || {};
+        if (pr === 0 || u.owned[item]) return json(res, 200, { ok: 1, eco: eco(u) });
+        if ((u.credits | 0) < pr) return json(res, 402, { err: 'poor', need: pr - (u.credits | 0), eco: eco(u) });
+        u.credits -= pr; u.owned[item] = Date.now(); persist();
+        return json(res, 200, { ok: 1, eco: eco(u) });
+      }
       if (p === '/api/save') { u.data = clean(m.data); u.upd = Date.now(); persist(); return json(res, 200, { ok: 1, upd: u.upd }); }
       return json(res, 404, { err: 'nf' });
     } catch (e) { console.error(e); json(res, 500, { err: 'server' }); }
