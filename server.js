@@ -2,15 +2,17 @@
 // Serverar spelet och skickar vidare meddelanden mellan spelarna i samma rum (WebSocket).
 const http = require('http'), fs = require('fs'), path = require('path'), crypto = require('crypto');
 const PORT = process.env.PORT || 3000;
-const PUB = __dirname;
+const PASSWORD = process.env.PASSWORD || '';   // valfritt: sätt PASSWORD för att kräva lösenord
+const PUB = fs.existsSync(path.join(__dirname, 'public', 'index.html')) ? path.join(__dirname, 'public') : __dirname; // fungerar med index.html i public/ eller bredvid server.js
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.ico': 'image/x-icon' };
 
 const server = http.createServer((req, res) => {
   let p = decodeURIComponent((req.url || '/').split('?')[0]);
   if (p === '/' || p === '') p = '/index.html';
   if (p === '/health') { res.writeHead(200); return res.end('ok'); }
-  const f = path.normalize(path.join(PUB, p));
-  if (!f.startsWith(PUB)) { res.writeHead(403); return res.end(); }
+  if (p === '/auth') { const ok = !PASSWORD || new URL(req.url, 'http://x').searchParams.get('pw') === PASSWORD; res.writeHead(ok ? 200 : 401); return res.end(ok ? 'ok' : 'no'); }
+  if (p !== '/index.html') { res.writeHead(404); return res.end('Not found'); }
+  const f = path.join(PUB, 'index.html');
   fs.readFile(f, (e, d) => {
     if (e) { res.writeHead(404); return res.end('Not found'); }
     res.writeHead(200, { 'Content-Type': TYPES[path.extname(f)] || 'application/octet-stream', 'Cache-Control': 'no-cache' });
@@ -36,6 +38,7 @@ function send(c, str) { if (!c.socket.destroyed) c.socket.write(frame(str)); }
 server.on('upgrade', (req, socket) => {
   const key = req.headers['sec-websocket-key'];
   if (!key || (req.headers.upgrade || '').toLowerCase() !== 'websocket') { socket.destroy(); return; }
+  if (PASSWORD && new URL(req.url, 'http://x').searchParams.get('pw') !== PASSWORD) { socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n'); socket.destroy(); return; }
   const acc = crypto.createHash('sha1').update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
   socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ' + acc + '\r\n\r\n');
   socket.setNoDelay(true);
