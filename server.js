@@ -50,19 +50,26 @@ function readBody(req, cb) {
   req.on('end', () => { try { cb(JSON.parse(Buffer.concat(ch).toString('utf8'))); } catch (_) { cb(null); } });
 }
 function json(res, code, o) { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(o)); }
-function board() {
+function board(me) {
   const rows = Object.values(users).map(u => {
-    let stars = 0, st = {};
-    for (const k in u.data) if (k.startsWith('pool8.chal.')) stars += parseInt(u.data[k], 10) || 0;
-    try { st = JSON.parse(u.data['pool8.stats'] || '{}'); } catch (_) { }
-    return { name: u.name, stars, won: st.mpWon | 0, played: st.mpPlayed | 0 };
+    const d = u.data || {}; let stars = 0, st = {}, tr = {};
+    for (const k in d) if (k.startsWith('pool8.chal.')) stars += parseInt(d[k], 10) || 0;
+    try { st = JSON.parse(d['pool8.stats'] || '{}') || {}; } catch (_) { }
+    try { tr = JSON.parse(d['pool8.trophies'] || '{}') || {}; } catch (_) { }
+    const bi = k => { const v = parseInt(d[k], 10); return isNaN(v) ? 0 : v; };
+    return { name: u.name, trophies: Object.keys(tr).length, stars, won: st.mpWon | 0, streak: st.bestStreak | 0, pots: st.pots | 0, clear: bi('pool8.best.clear'), nine: bi('pool8.best.nine') };
   });
-  const top = (key) => rows.filter(r => r[key] > 0).sort((a, b) => b[key] - a[key] || a.name.localeCompare(b.name)).slice(0, 10);
-  return { stars: top('stars'), won: top('won') };
+  const LOW = { clear: 1, nine: 1 }, cats = {}, ml = String(me || '').toLowerCase();
+  for (const key of ['trophies', 'stars', 'won', 'streak', 'clear', 'nine', 'pots']) {
+    const list = rows.filter(r => r[key] > 0).sort((a, b) => (LOW[key] ? a[key] - b[key] : b[key] - a[key]) || a.name.localeCompare(b.name));
+    const idx = ml ? list.findIndex(r => r.name.toLowerCase() === ml) : -1;
+    cats[key] = { top: list.slice(0, 10).map(r => ({ name: r.name, v: r[key] })), me: idx >= 0 ? { rank: idx + 1, v: list[idx][key] } : null, n: list.length };
+  }
+  return { cats };
 }
 function api(req, res, p) {
   const ip = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
-  if (req.method === 'GET') { if (p === '/api/ping') return json(res, 200, { ok: 1 }); if (p === '/api/board') return json(res, 200, board()); return json(res, 404, { err: 'nf' }); }
+  if (req.method === 'GET') { if (p === '/api/ping') return json(res, 200, { ok: 1 }); if (p === '/api/board') return json(res, 200, board(new URL(req.url, 'http://x').searchParams.get('me'))); return json(res, 404, { err: 'nf' }); }
   if (req.method !== 'POST') return json(res, 405, { err: 'method' });
   readBody(req, async m => {
     try {
