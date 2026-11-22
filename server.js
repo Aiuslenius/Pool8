@@ -46,12 +46,13 @@ function clean(d) {
 }
 
 /* ---- krediter och butik (servern avgör saldo och köp) ---- */
-const TABLE_IDS = ['classic', 'tournament', 'burgundy', 'midnight', 'nordic', 'argyle', 'striped', 'checkered', 'custom'];
+const TABLE_IDS = ['classic', 'tournament', 'burgundy', 'midnight', 'nordic', 'argyle', 'striped', 'checkered', 'custom', 'galaxy', 'carbon', 'cyber', 'casino', 'camo', 'ocean', 'tartan', 'marble'];
+const TABLE_500 = ['galaxy', 'carbon', 'cyber', 'casino', 'camo', 'ocean', 'tartan', 'marble'];
 const CUE_IDS = ['classic', 'midnight', 'maple', 'crimson', 'charcoal', 'neon', 'ivory', 'violet', 'custom'];
 const WIN_CREDITS = 100, MIN_WIN_GAP = 40000, MAX_WINS_DAY = 40;
 function price(item) {
   const m = /^([TC]):([a-z]+)$/.exec(String(item || '')); if (!m) return null;
-  if (m[1] === 'T') return TABLE_IDS.includes(m[2]) ? (m[2] === 'classic' ? 0 : 1000) : null;
+  if (m[1] === 'T') return TABLE_IDS.includes(m[2]) ? (m[2] === 'classic' ? 0 : TABLE_500.includes(m[2]) ? 500 : 1000) : null;
   return CUE_IDS.includes(m[2]) ? (m[2] === 'classic' ? 0 : 5000) : null;
 }
 const eco = u => ({ credits: u.credits | 0, owned: Object.keys(u.owned || {}) });
