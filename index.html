@@ -1,0 +1,2220 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+<script>/* Ersätter claude.ai:s rumsfunktion med en vanlig WebSocket mot den egna servern. */
+(() => {
+  if (window.claude) return;
+  const myPeer = 'p' + Math.random().toString(36).slice(2, 10);
+  const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
+  let ws = null, open = false, queue = [];
+  const rooms = new Map();
+  function connect() {
+    ws = new WebSocket(proto + location.host + '/ws');
+    ws.onopen = () => { open = true; queue.forEach(q => ws.send(q)); queue = []; rooms.forEach(r => r._hello()); };
+    ws.onmessage = e => { let m; try { m = JSON.parse(e.data); } catch (_) { return; } const r = rooms.get(m.room); if (r) r._in(m); };
+    ws.onclose = () => { open = false; setTimeout(connect, 1500); };
+    ws.onerror = () => { try { ws.close(); } catch (_) { } };
+  }
+  function tx(o) { const s = JSON.stringify(o); if (open) ws.send(s); else if (queue.length < 50) queue.push(s); }
+  function mk(name) {
+    const st = { handlers: {}, pf: [], others: new Map(), peers: [] };
+    const me = { peer: myPeer, by: null, isMe: true, sameTab: true, kind: 'viewer', guest: false, presence: {}, updatedAt: 0 };
+    const send = m => tx(Object.assign({ room: name, from: myPeer }, m));
+    const snap = () => [me].concat([...st.others.values()]);
+    const fire = ch => { st.peers = snap(); st.pf.slice().forEach(f => f(Object.assign({ peers: st.peers, joined: [], left: [], updated: [] }, ch))); };
+    const r = {
+      name,
+      _hello: () => send({ t: 'hello', pres: me.presence }),
+      _in(m) {
+        if (m.from === myPeer) return;
+        if (m.t === 'hello') {
+          const p = { peer: m.from, by: null, isMe: false, sameTab: false, kind: 'viewer', guest: false, presence: m.pres || {}, updatedAt: Date.now() };
+          const isNew = !st.others.has(m.from); st.others.set(m.from, p);
+          if (isNew) { send({ t: 'hello', pres: me.presence }); setTimeout(() => fire({ joined: [p] }), 0); }
+        } else if (m.t === 'pres') {
+          const p = st.others.get(m.from); if (p) { const np = Object.assign({}, p, { presence: m.pres || {}, updatedAt: Date.now() }); st.others.set(m.from, np); fire({ updated: [np] }); }
+        } else if (m.t === 'bye') {
+          const p = st.others.get(m.from); st.others.delete(m.from); if (p) fire({ left: [p] });
+        } else if (m.t === 'ev') {
+          (st.handlers[m.topic] || []).slice().forEach(h => h({ topic: m.topic, data: m.data, peer: m.from, by: null, isMe: false, sameTab: false, kind: 'viewer', guest: false }));
+        }
+      },
+      emit: async (t, d) => { send({ t: 'ev', topic: t, data: d === undefined ? null : JSON.parse(JSON.stringify(d)) }); },
+      on: (t, h) => { (st.handlers[t] = st.handlers[t] || []).push(h); return () => { st.handlers[t] = (st.handlers[t] || []).filter(x => x !== h); }; },
+      presence: async p => { me.presence = Object.assign({}, me.presence, p); send({ t: 'pres', pres: me.presence }); },
+      peers: () => st.peers.length ? st.peers : snap(),
+      onPeers: f => { st.pf.push(f); setTimeout(() => fire({ joined: snap() }), 0); return () => { st.pf = st.pf.filter(x => x !== f); }; },
+      connected: () => open, onConnection: () => () => { },
+      leave: async () => { send({ t: 'bye' }); rooms.delete(name); }
+    };
+    rooms.set(name, r);
+    r._hello();
+    return r;
+  }
+  connect();
+  window.claude = { use: async n => n === 'room' ? { join: async name => rooms.get(name) || mk(name) } : null };
+})();
+</script>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>8-Ball Pool – Övningsläge</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<style>
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;overflow:hidden;background:#06080b;color:#eef1f4;font-family:Inter,system-ui,-apple-system,"Segoe UI",sans-serif;user-select:none;-webkit-user-select:none}
+#c{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none;cursor:crosshair}
+#hud{position:fixed;inset:0;pointer-events:none}
+#hud>*{pointer-events:auto}
+.glass{background:rgba(14,18,22,.62);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,.09);border-radius:14px;box-shadow:0 8px 30px rgba(0,0,0,.35)}
+#brand{position:absolute;left:18px;top:16px;padding:12px 16px;min-width:190px}
+#brand h1{margin:0;font-size:17px;font-weight:800;letter-spacing:.14em}
+#brand h1 span{color:#e8c070}
+#brand p{margin:2px 0 10px;font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:#8d99a5}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:6px 14px}
+.stat b{display:block;font-size:16px;font-weight:700;font-variant-numeric:tabular-nums}
+.stat small{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:#8d99a5}
+#topc{position:absolute;left:50%;top:14px;transform:translateX(-50%);padding:9px 14px;text-align:center}
+#group{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:#e8c070;font-weight:700;margin-bottom:7px}
+#tray{display:flex;align-items:center;gap:4px}
+.sep{width:1px;height:18px;background:rgba(255,255,255,.2);margin:0 5px}
+.ball{--c:#888;position:relative;display:inline-block;width:23px;height:23px;border-radius:50%;background:var(--c);box-shadow:inset -3px -4px 6px rgba(0,0,0,.4),inset 2px 2px 4px rgba(255,255,255,.35),0 2px 4px rgba(0,0,0,.4);transition:opacity .3s,transform .3s,filter .3s}
+.ball.stripe{background:linear-gradient(#f5f1e6 0 27%,var(--c) 27% 73%,#f5f1e6 73%)}
+.ball i{position:absolute;left:50%;top:50%;width:12px;height:12px;margin:-6px 0 0 -6px;border-radius:50%;background:#f5f1e6;color:#111;font:800 8px/12px Inter,sans-serif;text-align:center;font-style:normal}
+.ball:nth-child(n){}
+.ball.gone{opacity:.18;transform:scale(.8);filter:grayscale(.8)}
+.ball.mine{outline:2px solid #e8c070;outline-offset:2px}
+#banner{position:absolute;left:50%;top:104px;transform:translate(-50%,-10px);padding:10px 20px;border-radius:30px;background:rgba(14,18,22,.8);border:1px solid rgba(255,255,255,.12);font-size:14px;font-weight:600;opacity:0;transition:opacity .25s,transform .25s;pointer-events:none!important;max-width:92vw;text-align:center}
+#banner.show{opacity:1;transform:translate(-50%,0)}
+#banner.good{border-color:#4fd18b;color:#bff5d7}
+#banner.bad{border-color:#ff6b6b;color:#ffd0d0}
+#power{position:absolute;right:20px;top:50%;transform:translateY(-50%);width:62px;padding:12px 0 10px;display:flex;flex-direction:column;align-items:center;gap:8px;touch-action:none}
+#power small{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:#8d99a5}
+#plabel{font-weight:800;font-size:15px;font-variant-numeric:tabular-nums}
+#ptrack{position:relative;width:20px;height:min(36vh,260px);border-radius:10px;background:rgba(255,255,255,.08);overflow:hidden;box-shadow:inset 0 2px 6px rgba(0,0,0,.5);cursor:ns-resize}
+#pfill{position:absolute;left:0;right:0;bottom:0;background:linear-gradient(to top,#3ddc84,#f1d34a 60%,#ff5a47);border-radius:10px}
+#spinwrap{position:absolute;left:18px;bottom:18px;padding:10px 14px 12px;display:flex;gap:12px;align-items:center}
+#spinwrap small{display:block;font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:#8d99a5;line-height:1.5}
+#spin{position:relative;width:78px;height:78px;border-radius:50%;background:radial-gradient(circle at 35% 30%,#fff,#e9e4d6 60%,#b9b3a3);box-shadow:inset -6px -8px 14px rgba(0,0,0,.3),0 4px 12px rgba(0,0,0,.5);cursor:pointer;touch-action:none}
+#spin::before,#spin::after{content:"";position:absolute;background:rgba(0,0,0,.18)}
+#spin::before{left:50%;top:8%;bottom:8%;width:1px}
+#spin::after{top:50%;left:8%;right:8%;height:1px}
+#spindot{position:absolute;width:13px;height:13px;margin:-6.5px 0 0 -6.5px;border-radius:50%;background:#d8332a;box-shadow:0 0 0 2px rgba(255,255,255,.8),0 2px 5px rgba(0,0,0,.5);pointer-events:none}
+#actions{position:absolute;right:18px;bottom:18px;display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;max-width:56vw}
+button{font:600 12px Inter,sans-serif;color:#e6eaee;cursor:pointer}
+#actions button{padding:9px 13px;border-radius:10px;background:rgba(14,18,22,.65);border:1px solid rgba(255,255,255,.1);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);transition:background .15s,border-color .15s}
+#actions button:hover{background:rgba(40,48,56,.85)}
+#actions button.on{border-color:#e8c070;color:#f6dca3}
+#actions button:disabled{opacity:.35;cursor:default}
+#actions kbd{margin-left:6px;font:600 10px Inter;opacity:.55;padding:1px 5px;border:1px solid rgba(255,255,255,.25);border-radius:4px}
+#shoot{position:absolute;left:50%;bottom:30px;transform:translateX(-50%);padding:15px 44px;border-radius:40px;border:0;font:800 15px Inter;letter-spacing:.16em;color:#1a1305;background:linear-gradient(#f6d98e,#d9a94a);box-shadow:0 8px 24px rgba(217,169,74,.35),inset 0 1px 0 rgba(255,255,255,.6);transition:transform .1s,filter .15s}
+#shoot:hover:not(:disabled){filter:brightness(1.08)}
+#shoot:active:not(:disabled){transform:translateX(-50%) scale(.97)}
+#shoot:disabled{filter:grayscale(.9) brightness(.55);cursor:default;box-shadow:none}
+#hint{position:absolute;left:50%;bottom:8px;transform:translateX(-50%);font-size:11px;color:#7d8993;white-space:nowrap;pointer-events:none!important}
+#modal{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(3,5,8,.55);backdrop-filter:blur(4px);z-index:5}
+#modal.show{display:flex}
+#mcard{width:min(420px,90vw);padding:28px;text-align:center}
+#mtitle{font-size:24px;font-weight:800;margin:0 0 8px}
+#mtext{margin:0 0 20px;color:#aab4be;line-height:1.5;font-size:14px}
+#mbtns{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
+#mbtns button{padding:11px 20px;border-radius:10px;border:1px solid rgba(255,255,255,.15);background:rgba(255,255,255,.06);font-size:13px}
+#mbtns button.primary{background:linear-gradient(#f6d98e,#d9a94a);color:#1a1305;border:0;font-weight:800}
+#loading{position:fixed;inset:0;background:#06080b;display:flex;align-items:center;justify-content:center;z-index:9;transition:opacity .6s;font-weight:600;letter-spacing:.2em;color:#8d99a5;text-transform:uppercase;font-size:12px}
+#loading.hide{opacity:0;pointer-events:none}
+.lmsg{max-width:80vw;text-align:center;letter-spacing:.02em;text-transform:none;font-size:15px;line-height:1.6;color:#d6dbe0}
+body.narrow #brand{padding:8px 10px;min-width:0;left:8px;top:8px}
+body.narrow #brand p,body.narrow .stat:nth-child(n+3){display:none}
+body.narrow .stats{grid-template-columns:repeat(2,auto)}
+body.narrow #topc{top:8px;left:auto;right:8px;transform:none;padding:6px 8px}
+body.narrow .ball{width:15px;height:15px}
+body.narrow .ball i{width:8px;height:8px;margin:-4px 0 0 -4px;font-size:6px;line-height:8px}
+body.narrow #group{font-size:9px;margin-bottom:4px}
+body.narrow #banner{top:70px;font-size:12px}
+body.narrow #power{right:8px;width:50px}
+body.narrow #spinwrap{left:8px;bottom:8px;padding:6px}
+body.narrow #spinwrap small{display:none}
+body.narrow #spin{width:62px;height:62px}
+body.narrow #actions{right:8px;bottom:8px;max-width:48vw;gap:5px}
+body.narrow #actions button{padding:7px 9px;font-size:11px}
+body.narrow #actions kbd,body.narrow #hint{display:none}
+body.narrow #shoot{bottom:84px;padding:12px 32px;left:50%}
+
+#home{position:fixed;inset:0;z-index:6;display:flex;align-items:flex-start;padding:0 7vw;background:linear-gradient(90deg,rgba(4,7,10,.94) 0%,rgba(4,7,10,.78) 36%,rgba(4,7,10,.18) 68%,rgba(4,7,10,0) 100%);transition:opacity .55s,visibility .55s;overflow:auto}
+#home.hide{opacity:0;visibility:hidden;pointer-events:none}
+.hcontent{max-width:470px;width:100%;padding:30px 0;margin:auto 0}
+.hlogo{display:flex;align-items:center;gap:18px}
+.h8{flex:none;width:78px;height:78px;border-radius:50%;background:radial-gradient(circle at 34% 30%,#5a5a5a,#141414 46%,#000);box-shadow:inset -6px -8px 14px rgba(0,0,0,.6),0 12px 34px rgba(0,0,0,.65),0 0 0 1px rgba(255,255,255,.07);display:flex;align-items:center;justify-content:center}
+.h8 i{width:40px;height:40px;border-radius:50%;background:#f5f1e6;color:#111;font:800 25px/40px Inter,sans-serif;text-align:center;font-style:normal}
+#home h1{margin:0;font-size:clamp(32px,5vw,58px);line-height:.96;font-weight:800;letter-spacing:.07em}
+#home h1 em{display:block;font-style:normal;color:#e8c070}
+.htag{margin:14px 0 0;font-size:12px;letter-spacing:.28em;text-transform:uppercase;color:#8d99a5}
+.hbtns{display:flex;flex-direction:column;gap:11px;margin-top:36px;max-width:330px}
+.hbtn{padding:15px 22px;border-radius:12px;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.05);font:600 14px Inter,sans-serif;letter-spacing:.04em;text-align:left;color:#e6eaee;transition:background .15s,border-color .15s,transform .1s}
+.hbtn:hover{background:rgba(255,255,255,.1);border-color:rgba(255,255,255,.28)}
+.hbtn.hprimary{padding:18px 24px;font-weight:800;font-size:16px;letter-spacing:.2em;text-align:center;color:#1a1305;border:0;background:linear-gradient(#f6d98e,#d9a94a);box-shadow:0 10px 28px rgba(217,169,74,.32),inset 0 1px 0 rgba(255,255,255,.6)}
+.hbtn.hprimary:hover{filter:brightness(1.07);transform:translateY(-1px)}
+#hwwarn{display:none;margin-top:26px;max-width:380px;padding:12px 14px;border-radius:10px;border:1px solid rgba(255,170,90,.45);background:rgba(255,150,60,.08);color:#ffd9b0;font-size:12.5px;line-height:1.5}
+#hwwarn.show{display:block}
+.hsub{display:none;margin-top:28px;max-width:440px}
+.hsub.show{display:block}
+.hsub h2{margin:0 0 12px;font-size:13px;letter-spacing:.2em;text-transform:uppercase;color:#e8c070}
+.hsub h3{margin:16px 0 6px;font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:#8d99a5}
+.hsub p,.hsub li{font-size:13.5px;line-height:1.55;color:#c3cbd3;margin:0 0 4px}
+.hsub ul{margin:0;padding-left:18px}
+.hsub kbd{font:600 11px Inter;padding:1px 6px;border:1px solid rgba(255,255,255,.28);border-radius:4px;color:#eef1f4}
+.hback{margin-top:20px;padding:10px 18px;border-radius:10px;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.05)}
+.seg{display:flex;gap:6px;margin:6px 0 4px}
+.seg button,.tgl{padding:9px 14px;border-radius:9px;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.05);font-size:12.5px}
+.seg button.on,.tgl.on{border-color:#e8c070;color:#f6dca3;background:rgba(232,192,112,.1)}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
+.hfoot{display:none;position:fixed;left:7vw;bottom:20px;font-size:11px;letter-spacing:.12em;color:#69747e;text-transform:uppercase}
+body.inmenu #hud{display:none}
+@media(max-width:720px){#home{padding:0 22px;background:rgba(4,7,10,.8)}.h8{width:58px;height:58px}.h8 i{width:30px;height:30px;font-size:19px;line-height:30px}.hfoot{display:none}}
+
+.swrow{display:flex;gap:10px;flex-wrap:wrap;margin:8px 0 6px}
+.swi{display:flex;flex-direction:column;align-items:center;gap:5px;background:none;border:0;padding:0;color:#aab4be;font-size:11px}
+.swi .sw{display:block;border-radius:12px;border:2px solid transparent;transition:transform .12s,outline-color .12s;outline:2px solid transparent;outline-offset:3px}
+.swi:hover .sw{transform:translateY(-2px)}
+.swi.on{color:#f6dca3}
+.swi.on .sw{outline-color:#e8c070}
+.sw.tb{width:58px;height:58px;border-width:7px;border-style:solid;box-shadow:inset 0 0 14px rgba(0,0,0,.35),0 4px 10px rgba(0,0,0,.4)}
+.sw.cu{width:76px;height:20px;border-radius:10px;margin:14px 0 12px;box-shadow:0 3px 8px rgba(0,0,0,.45)}
+
+.mcard{display:block;width:100%;text-align:left;padding:12px 14px;margin:0 0 8px;border-radius:11px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.04);color:#e6eaee;transition:background .15s,border-color .15s}
+.mcard:hover{background:rgba(255,255,255,.09);border-color:rgba(232,192,112,.5)}
+.mcard b{display:flex;justify-content:space-between;gap:10px;font-size:14px}
+.mcard b em{font-style:normal;font-weight:600;font-size:11px;color:#e8c070;letter-spacing:.06em}
+.mcard span{display:block;margin-top:3px;font-size:12px;line-height:1.4;color:#98a4af;font-weight:400}
+.mgrid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.mgrid .mcard{margin:0}
+.crow{display:none;gap:14px;flex-wrap:wrap;margin:6px 0 4px}
+.crow label{display:flex;align-items:center;gap:7px;font-size:12px;color:#aab4be}
+.crow input[type=color]{width:38px;height:28px;padding:0;border:1px solid rgba(255,255,255,.25);border-radius:6px;background:none;cursor:pointer}
+#hmain .hbtn small{display:block;margin-top:2px;font-weight:400;font-size:11.5px;letter-spacing:0;color:#8d99a5}
+
+.tin{padding:10px 12px;border-radius:9px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.06);color:#fff;font:600 14px Inter,sans-serif;width:190px;outline:none;user-select:text;-webkit-user-select:text}
+.tin:focus{border-color:#e8c070}
+#mp-status{margin-top:14px;font-size:13px;line-height:1.5;color:#c3cbd3}
+#mp-status .code{display:inline-block;margin:4px 0;padding:6px 14px;border-radius:9px;background:rgba(232,192,112,.12);border:1px solid rgba(232,192,112,.5);color:#f6dca3;font:800 24px Inter;letter-spacing:.3em}
+.ball.theirs{outline:2px dashed #7aa2ff;outline-offset:2px}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud">
+  <div id="brand" class="glass">
+    <h1>8-BALL <span>POOL</span></h1>
+    <p>Övningsläge</p>
+    <div class="stats">
+      <div class="stat"><b id="st-shots">0</b><small>Skott</small></div>
+      <div class="stat"><b id="st-fouls">0</b><small>Foul</small></div>
+      <div class="stat"><b id="st-streak">0</b><small>Bästa serie</small></div>
+      <div class="stat"><b id="st-acc">–</b><small>Träff</small></div>
+      <div class="stat"><b id="st-cleared">0</b><small>Bord klarade</small></div>
+    </div>
+  </div>
+  <div id="topc" class="glass"><div id="group">Öppet bord</div><div id="tray"></div></div>
+  <div id="banner"></div>
+  <div id="power" class="glass"><small>Kraft</small><div id="ptrack"><div id="pfill"></div></div><div id="plabel">70%</div></div>
+  <div id="spinwrap" class="glass">
+    <div id="spin" title="Effekt: klicka där kön ska träffa vita bollen. Dubbelklicka för att nollställa."><div id="spindot"></div></div>
+    <small>Effekt<br>Följ ↑ · Dra ↓<br>Sida ← →</small>
+  </div>
+  <div id="actions">
+    <button id="btn-view">Ovanifrån<kbd>T</kbd></button>
+    <button id="btn-guide" class="on">Siktlinje<kbd>G</kbd></button>
+    <button id="btn-sound" class="on">Ljud<kbd>M</kbd></button>
+    <button id="btn-undo" disabled>Ångra<kbd>U</kbd></button>
+    <button id="btn-new">Ny rack<kbd>R</kbd></button>
+    <button id="btn-menu">Meny<kbd>Esc</kbd></button>
+  </div>
+  <button id="shoot">SKJUT</button>
+  <div id="hint">Dra för att sikta · Scroll = zoom · ← → finjustera (Shift = extra fint) · ↑ ↓ kraft · Mellanslag = skjut</div>
+</div>
+<div id="home">
+  <div class="hcontent">
+    <div class="hlogo"><div class="h8"><i>8</i></div><h1>8-BALL<em>POOL</em></h1></div>
+    <p class="htag">Övningsläge · 3D</p>
+    <div id="hmain">
+      <div class="hbtns">
+        <button id="h-play" class="hbtn hprimary">SPELA</button>
+        <button id="h-modes" class="hbtn">Välj spelläge<small id="h-modename">Fri övning</small></button>
+        <button id="h-new" class="hbtn" style="display:none">Ny rack</button>
+        <button id="h-cust" class="hbtn">Anpassa bord &amp; kö</button>
+        <button id="h-mp" class="hbtn">Spela online<small>Turordnat mot en vän</small></button>
+        <button id="h-leave" class="hbtn" style="display:none">Lämna rummet</button>
+        <button id="h-how" class="hbtn">Så spelar du</button>
+        <button id="h-set" class="hbtn">Inställningar</button>
+      </div>
+      <div id="hwwarn"><b>Din webbläsare ritar 3D utan grafikkort.</b> Spelet kan laggla. Slå på <i>Använd grafikacceleration</i> i webbläsarens inställningar → System och starta om den. Kvaliteten har satts till Låg.</div>
+    </div>
+    <div id="sub-mp" class="hsub">
+      <h2>Spela online</h2>
+      <p>Turordnat 8-ball mot en vän. Ni måste båda ha sidan öppen samtidigt.</p>
+      <h3>Ditt namn</h3>
+      <input id="mp-name" class="tin" maxlength="16" placeholder="Spelare" autocomplete="off">
+      <h3>Skapa rum</h3>
+      <div class="row"><button class="hbtn" id="mp-create">Skapa rum</button></div>
+      <h3>Gå med i rum</h3>
+      <div class="row"><input id="mp-code" class="tin" maxlength="8" placeholder="Rumskod" autocomplete="off" style="width:130px;text-transform:uppercase"><button class="hbtn" id="mp-join">Gå med</button></div>
+      <div id="mp-status"></div>
+      <button class="hback hbtn" data-back>← Tillbaka</button>
+    </div>
+    <div id="sub-modes" class="hsub"><h2>Spelläge</h2><div id="modelist"></div><button class="hback hbtn" data-back>← Tillbaka</button></div>
+    <div id="sub-cust" class="hsub">
+      <h2>Anpassa</h2>
+      <h3>Bord</h3>
+      <div class="swrow" id="sw-table"></div>
+      <div class="crow" id="ct-row"><label>Duk <input type="color" id="ct-cloth"></label><label>Träram <input type="color" id="ct-wood"></label></div>
+      <h3>Kö</h3>
+      <div class="swrow" id="sw-cue"></div>
+      <div class="crow" id="cc-row"><label>Handtag <input type="color" id="cc-butt"></label><label>Grepp <input type="color" id="cc-wrap"></label><label>Detaljer <input type="color" id="cc-gold"></label></div>
+      <p>Valen syns direkt på bordet bakom menyn och sparas till nästa gång.</p>
+      <button class="hback hbtn" data-back>← Tillbaka</button>
+    </div>
+    <div id="sub-how" class="hsub">
+      <h2>Så spelar du</h2>
+      <p>Sänk alla dina bollar (hela 1–7 eller halva 9–15) och avsluta med åttan. Du övar själv, utan motståndare.</p>
+      <h3>Styrning</h3>
+      <ul>
+        <li><b>Sikta:</b> dra med musen, eller <kbd>←</kbd> <kbd>→</kbd> för finjustering (<kbd>Shift</kbd> = extra fint)</li>
+        <li><b>Kraft:</b> reglaget till höger eller <kbd>↑</kbd> <kbd>↓</kbd></li>
+        <li><b>Effekt:</b> klicka på den lilla bollen nere till vänster</li>
+        <li><b>Skjut:</b> <kbd>Mellanslag</kbd> eller knappen Skjut</li>
+        <li><b>Zoom:</b> mushjul · <kbd>T</kbd> ovanifrån · <kbd>G</kbd> siktlinje · <kbd>U</kbd> ångra · <kbd>Esc</kbd> meny</li>
+      </ul>
+      <h3>Regler</h3>
+      <ul>
+        <li>Bordet är öppet tills du sänker en boll – då får du den gruppen.</li>
+        <li>Foul: träffar fel boll först, missar alla bollar, eller sänker den vita. Du får då boll i hand.</li>
+        <li>Åttan i hål för tidigt = förlust.</li>
+      </ul>
+      <button class="hback hbtn" data-back>← Tillbaka</button>
+    </div>
+    <div id="sub-set" class="hsub">
+      <h2>Inställningar</h2>
+      <h3>Grafikkvalitet</h3>
+      <div class="seg" id="qseg"><button data-q="auto">Auto</button><button data-q="low">Låg</button><button data-q="med">Medel</button><button data-q="high">Hög</button></div>
+      <p>Låg stänger av skuggor. Välj Låg om det laggar.</p>
+      <h3>Övrigt</h3>
+      <div class="row"><button class="tgl" id="h-snd">Ljud</button><button class="tgl" id="h-guide">Siktlinje</button></div>
+      <button class="hback hbtn" data-back>← Tillbaka</button>
+    </div>
+  </div>
+  <div class="hfoot">Övningsläge · ingen motståndare</div>
+</div>
+<div id="modal"><div id="mcard" class="glass"><h2 id="mtitle"></h2><p id="mtext"></p><div id="mbtns"></div></div></div>
+<div id="loading">Laddar bordet…</div>
+<script>
+/* ============================================================
+   Biljardfysik (2D med spin) + regler för 8-ball
+   Enheter: cm, sekunder. Bordet: x = långsida, z = kortsida.
+   ============================================================ */
+const PHYS = (function () {
+  const R = 2.86;            // bollradie
+  const HX = 127, HZ = 63.5; // halva spelytan
+  const G = 981;
+  const MU_S = 0.2;          // glidfriktion mot duk
+  const MU_R = 0.017;        // rullmotstånd
+  const E_BALL = 0.96;
+  const MU_C = 0.17;         // friktion mot kudde
+  const CG = 8.5;            // hörnfickans mynning (kuddens slut)
+  const SG = 6.8;            // sidofickans halva mynning
+  const RK = 0.7;            // radie på kuddändar ("knogar")
+  const VMAX = 430;          // cm/s vid full kraft
+  const DT = 1 / 480;
+
+  // fickor: x, z, fångstradie
+  const POCKETS = [];
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) POCKETS.push({ x: sx * (HX + 2), z: sz * (HZ + 2), r: 8.2, corner: true });
+  POCKETS.push({ x: 0, z: HZ + 2.5, r: 7.5, corner: false });
+  POCKETS.push({ x: 0, z: -(HZ + 2.5), r: 7.5, corner: false });
+
+  // kuddarnas snedställda ändytor (fickornas "käftar") som linjesegment
+  const JAW_C = 5, JAW_S = 2.5, JAW_D = 9;
+  const JAWS = [];
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+    JAWS.push([sx * (HX - CG), sz * HZ, sx * (HX - CG + JAW_C), sz * (HZ + JAW_D)]);
+    JAWS.push([sx * HX, sz * (HZ - CG), sx * (HX + JAW_D), sz * (HZ - CG + JAW_C)]);
+    JAWS.push([sx * SG, sz * HZ, sx * (SG - JAW_S), sz * (HZ + JAW_D)]);
+  }
+
+  function newBall(id) {
+    return { id, x: 0, z: 0, vx: 0, vz: 0, wx: 0, wy: 0, wz: 0, out: false };
+  }
+
+  function shuffle(a) {
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
+  }
+
+  // Ställ upp en rack: returnerar 16 bollar (id 0 = vit)
+  function makeRack() {
+    const balls = [];
+    for (let i = 0; i < 16; i++) balls.push(newBall(i));
+    const solids = shuffle([1, 2, 3, 4, 5, 6, 7]);
+    const stripes = shuffle([9, 10, 11, 12, 13, 14, 15]);
+    const corners = Math.random() < 0.5 ? [solids.pop(), stripes.pop()] : [stripes.pop(), solids.pop()];
+    const rest = shuffle(solids.concat(stripes));
+    const order = new Array(15);
+    order[4] = 8;
+    order[10] = corners[0];
+    order[14] = corners[1];
+    let k = 0;
+    for (let i = 0; i < 15; i++) if (order[i] === undefined) order[i] = rest[k++];
+    const D = 2 * R + 0.05;
+    const ax = HX / 2;
+    let idx = 0;
+    for (let row = 0; row < 5; row++) {
+      for (let i = 0; i <= row; i++) {
+        const b = balls[order[idx++]];
+        b.x = ax + row * D * Math.sqrt(3) / 2;
+        b.z = (i - row / 2) * D;
+      }
+    }
+    balls[0].x = -HX / 2; balls[0].z = 0;
+    return balls;
+  }
+
+  function stepBall(b, dt) {
+    const ux = b.vx + R * b.wz, uz = b.vz - R * b.wx;
+    const um = Math.hypot(ux, uz);
+    if (um > 0.1) {
+      // glider: friktion drar mot rullning
+      const k = Math.min(MU_S * G, um / (3.5 * dt));
+      const ax = -k * ux / um, az = -k * uz / um;
+      b.vx += ax * dt; b.vz += az * dt;
+      const f = 2.5 / R;
+      b.wx += -f * az * dt;
+      b.wz += f * ax * dt;
+    } else {
+      const sp = Math.hypot(b.vx, b.vz);
+      if (sp > 0) {
+        const dec = MU_R * G * dt;
+        if (sp <= dec || sp < 1.2) { b.vx = 0; b.vz = 0; }
+        else { const s = (sp - dec) / sp; b.vx *= s; b.vz *= s; }
+      }
+      b.wz = -b.vx / R; b.wx = b.vz / R;
+    }
+    // sidospinn avtar
+    if (b.wy !== 0) {
+      const d = 9 * dt;
+      if (Math.abs(b.wy) <= d) b.wy = 0; else b.wy -= Math.sign(b.wy) * d;
+      b.wy *= (1 - 0.5 * dt);
+    }
+    b.x += b.vx * dt;
+    b.z += b.vz * dt;
+  }
+
+  function isMoving(b) {
+    if (b.out) return false;
+    return b.vx !== 0 || b.vz !== 0 || Math.abs(b.wx) + Math.abs(b.wz) > 0.05;
+  }
+
+  function collideBalls(a, b, ev, toi, dt) {
+    const dx = b.x - a.x, dz = b.z - a.z;
+    const D = 2 * R;
+    const d2 = dx * dx + dz * dz;
+    if (d2 >= D * D || d2 < 1e-12) return;
+    // exakt kontaktögonblick inom steget (annars blir träffvinkeln fel vid hög fart)
+    if (toi) {
+      const r0x = b.px - a.px, r0z = b.pz - a.pz;
+      const rdx = (b.x - b.px) - (a.x - a.px), rdz = (b.z - b.pz) - (a.z - a.pz);
+      const A = rdx * rdx + rdz * rdz;
+      const B = 2 * (r0x * rdx + r0z * rdz);
+      const C = r0x * r0x + r0z * r0z - D * D;
+      if (A > 1e-12 && C > 0) {
+        const disc = B * B - 4 * A * C;
+        if (disc >= 0) {
+          const t = (-B - Math.sqrt(disc)) / (2 * A);
+          if (t >= 0 && t <= 1) {
+            const ax = a.px + (a.x - a.px) * t, az = a.pz + (a.z - a.pz) * t;
+            const bx = b.px + (b.x - b.px) * t, bz = b.pz + (b.z - b.pz) * t;
+            const nx = (bx - ax) / D, nz = (bz - az) / D;
+            const vn = (a.vx - b.vx) * nx + (a.vz - b.vz) * nz;
+            if (vn > 0) {
+              const j = (1 + E_BALL) / 2 * vn;
+              a.vx -= j * nx; a.vz -= j * nz;
+              b.vx += j * nx; b.vz += j * nz;
+              const rem = dt * (1 - t);
+              a.x = ax + a.vx * rem; a.z = az + a.vz * rem;
+              b.x = bx + b.vx * rem; b.z = bz + b.vz * rem;
+              if (ev) ev('ball', a, b, vn);
+              return;
+            }
+          }
+        }
+      }
+    }
+    const d = Math.sqrt(d2);
+    const nx = dx / d, nz = dz / d;
+    const half = (D - d) / 2;
+    a.x -= nx * half; a.z -= nz * half;
+    b.x += nx * half; b.z += nz * half;
+    const vn = (a.vx - b.vx) * nx + (a.vz - b.vz) * nz;
+    if (vn > 0) {
+      const j = (1 + E_BALL) / 2 * vn;
+      a.vx -= j * nx; a.vz -= j * nz;
+      b.vx += j * nx; b.vz += j * nz;
+      if (ev) ev('ball', a, b, vn);
+    }
+  }
+
+  // kuddstuds. (nx,nz) pekar in mot bordet
+  function bounce(b, nx, nz, ev) {
+    const vn = b.vx * nx + b.vz * nz;
+    if (vn >= 0) return;
+    const tx = nz, tz = -nx;
+    const vt = b.vx * tx + b.vz * tz;
+    const ut = vt - R * b.wy;
+    const e = Math.max(0.72, 0.9 - 0.00025 * Math.abs(vn));
+    const jn = -(1 + e) * vn;
+    b.vx += jn * nx; b.vz += jn * nz;
+    let jt = -ut / 3.5;
+    const lim = MU_C * jn;
+    jt = Math.max(-lim, Math.min(lim, jt));
+    b.vx += jt * tx; b.vz += jt * tz;
+    b.wy += -2.5 * jt / R;
+    if (ev) ev('cushion', b, null, -vn);
+  }
+
+  function cushions(b, ev) {
+    const LX = HX - R, LZ = HZ - R;
+    const ax = Math.abs(b.x), az = Math.abs(b.z);
+    if (ax > SG && ax < HX - CG) {
+      if (b.z > LZ) { b.z = LZ; bounce(b, 0, -1, ev); }
+      else if (b.z < -LZ) { b.z = -LZ; bounce(b, 0, 1, ev); }
+    }
+    if (az < HZ - CG) {
+      if (b.x > LX) { b.x = LX; bounce(b, -1, 0, ev); }
+      else if (b.x < -LX) { b.x = -LX; bounce(b, 1, 0, ev); }
+    }
+    // käftar
+    const rr = R + 0.3;
+    for (let i = 0; i < JAWS.length; i++) {
+      const j = JAWS[i];
+      const sx = j[2] - j[0], sz = j[3] - j[1];
+      let t = ((b.x - j[0]) * sx + (b.z - j[1]) * sz) / (sx * sx + sz * sz);
+      t = t < 0 ? 0 : t > 1 ? 1 : t;
+      const cx = j[0] + sx * t, cz = j[1] + sz * t;
+      const dx = b.x - cx, dz = b.z - cz;
+      const d2 = dx * dx + dz * dz;
+      if (d2 < rr * rr && d2 > 1e-12) {
+        const d = Math.sqrt(d2), nx = dx / d, nz = dz / d;
+        b.x = cx + nx * rr; b.z = cz + nz * rr;
+        const vn = b.vx * nx + b.vz * nz;
+        if (vn < 0) {
+          const jj = -(1 + 0.65) * vn;
+          b.vx += jj * nx; b.vz += jj * nz;
+          if (ev) ev('cushion', b, null, -vn);
+        }
+      }
+    }
+  }
+
+  function checkPockets(b, ev) {
+    for (let i = 0; i < POCKETS.length; i++) {
+      const p = POCKETS[i];
+      const dx = b.x - p.x, dz = b.z - p.z;
+      if (dx * dx + dz * dz < p.r * p.r) {
+        b.out = true; b.pocket = i;
+        if (ev) ev('pocket', b, null, Math.hypot(b.vx, b.vz));
+        return true;
+      }
+    }
+    // säkerhetsnät om en boll ändå lämnar bordet
+    if (Math.abs(b.x) > HX + 10 || Math.abs(b.z) > HZ + 10) {
+      let best = 0, bd = 1e9;
+      for (let i = 0; i < POCKETS.length; i++) {
+        const d = Math.hypot(b.x - POCKETS[i].x, b.z - POCKETS[i].z);
+        if (d < bd) { bd = d; best = i; }
+      }
+      b.out = true; b.pocket = best;
+      if (ev) ev('pocket', b, null, 0);
+      return true;
+    }
+    return false;
+  }
+
+  function step(balls, dt, ev) {
+    const n = balls.length;
+    for (let i = 0; i < n; i++) { const q = balls[i]; if (!q.out) { q.px = q.x; q.pz = q.z; stepBall(q, dt); } }
+    for (let pass = 0; pass < 2; pass++) {
+      for (let i = 0; i < n; i++) {
+        const a = balls[i]; if (a.out) continue;
+        for (let j = i + 1; j < n; j++) {
+          const b = balls[j]; if (b.out) continue;
+          collideBalls(a, b, ev, pass === 0, dt);
+        }
+      }
+    }
+    for (let i = 0; i < n; i++) {
+      const b = balls[i]; if (b.out) continue;
+      cushions(b, ev);
+      checkPockets(b, ev);
+    }
+  }
+
+  function anyMoving(balls) {
+    for (let i = 0; i < balls.length; i++) if (isMoving(balls[i])) return true;
+    return false;
+  }
+
+  // Stöt med kön. (a,b) = träffpunkt, a höger, b uppåt, båda i bollradier (-0.75..0.75)
+  function strike(cue, dx, dz, power, a, b) {
+    const v0 = power * VMAX;
+    cue.vx = v0 * dx; cue.vz = v0 * dz;
+    const f = 2.5 * v0 / R;
+    cue.wy = f * a;
+    cue.wx = f * b * dz;
+    cue.wz = -f * b * dx;
+  }
+
+  // Första kontakt längs en linje: boll eller kudde
+  function castAim(balls, ox, oz, dx, dz) {
+    let bestT = Infinity, hit = null;
+    const D = 2 * R;
+    for (const q of balls) {
+      if (q.id === 0 || q.out) continue;
+      const fx = q.x - ox, fz = q.z - oz;
+      const proj = fx * dx + fz * dz;
+      if (proj < 0) continue;
+      const perp2 = fx * fx + fz * fz - proj * proj;
+      if (perp2 > D * D) continue;
+      const t = proj - Math.sqrt(D * D - perp2);
+      if (t < bestT) { bestT = t; hit = q; }
+    }
+    let tw = Infinity;
+    const lx = HX - R, lz = HZ - R;
+    if (dx > 1e-9) tw = Math.min(tw, (lx - ox) / dx); else if (dx < -1e-9) tw = Math.min(tw, (-lx - ox) / dx);
+    if (dz > 1e-9) tw = Math.min(tw, (lz - oz) / dz); else if (dz < -1e-9) tw = Math.min(tw, (-lz - oz) / dz);
+    if (hit && bestT <= tw) return { t: Math.max(0, bestT), ball: hit };
+    return { t: Math.max(0, tw), ball: null };
+  }
+
+  function legalPlacement(balls, x, z) {
+    if (Math.abs(x) > HX - R - 0.2 || Math.abs(z) > HZ - R - 0.2) return false;
+    for (const q of balls) {
+      if (q.id === 0 || q.out) continue;
+      if (Math.hypot(q.x - x, q.z - z) < 2 * R + 0.05) return false;
+    }
+    return true;
+  }
+
+  /* ---------------- Övningsuppställningar ---------------- */
+  const dirTo = (f, t) => { const dx = t[0] - f[0], dz = t[1] - f[1], l = Math.hypot(dx, dz); return [dx / l, dz / l]; };
+  const rot = (v, a) => [v[0] * Math.cos(a) - v[1] * Math.sin(a), v[0] * Math.sin(a) + v[1] * Math.cos(a)];
+  const DRILLS = [
+    { id: 'straight', name: 'Rak in', desc: 'Rakt skott mot hörnfickan. Perfekt för att känna kraften.', make() {
+      const p = [POCKETS[3].x - 2, POCKETS[3].z - 2], d = dirTo([40, 10], p);
+      const obj = [p[0] - d[0] * 38, p[1] - d[1] * 38], cue = [obj[0] - d[0] * 45, obj[1] - d[1] * 45];
+      return { cue, balls: [[1, obj[0], obj[1]]] };
+    } },
+    { id: 'cut', name: 'Snedskott', desc: 'Skär bollen i hörnfickan. Sikta med siktlinjens spökboll.', make() {
+      const p = [POCKETS[3].x - 2, POCKETS[3].z - 2], d = dirTo([40, 10], p);
+      const obj = [p[0] - d[0] * 38, p[1] - d[1] * 38], r = rot(d, 0.5);
+      return { cue: [obj[0] - r[0] * 48, obj[1] - r[1] * 48], balls: [[1, obj[0], obj[1]]] };
+    } },
+    { id: 'side', name: 'Sidofickan', desc: 'Sidofickan är trång – sikta noga.', make() {
+      const p = [0, POCKETS[4].z - 2], obj = [24, 34], d = dirTo(obj, p), r = rot(d, 0.35);
+      return { cue: [obj[0] - r[0] * 50, obj[1] - r[1] * 50], balls: [[2, obj[0], obj[1]]] };
+    } },
+    { id: 'corners', name: 'Hörnen', desc: 'Sex bollar, en vid varje ficka. Sänk alla.', make() {
+      return { cue: [0, 0], balls: [[1, -109, -45], [2, -109, 45], [3, 109, -45], [4, 109, 45], [5, 18, 40], [6, -18, -40]] };
+    } },
+    { id: 'trio', name: 'Trion', desc: 'Tre bollar på rad – planera ordningen.', make() {
+      return { cue: [-75, 0], balls: [[9, 15, -26], [10, 40, 0], [11, 15, 26]] };
+    } },
+    { id: 'endgame', name: 'Slutspel', desc: 'Fyra utspridda bollar. Klara dem på så få skott som möjligt.', make() {
+      return { cue: [-70, -10], balls: [[3, 60, -32], [12, 10, 38], [6, -22, -36], [8, 88, 22]] };
+    } }
+  ];
+
+  /* ---------------- Regler ---------------- */
+  const typeOf = id => id === 0 ? 'cue' : id === 8 ? 'eight' : id < 8 ? 'solid' : 'stripe';
+  const nameOf = t => t === 'solid' ? 'hela' : 'halva';
+
+  // state: { group }, shot: { firstHit, pocketed[], railAfter, onTableBefore[] }
+  function evaluateShot(state, shot) {
+    const reasons = [];
+    let foul = false, win = false, loss = false;
+    const potted = shot.pocketed.filter(id => id !== 0);
+    const cueIn = shot.pocketed.includes(0);
+    const group = state.group;
+    const mineLeft = group ? shot.onTableBefore.filter(id => typeOf(id) === group) : [];
+
+    if (cueIn) { foul = true; reasons.push('Vita bollen i hål'); }
+    if (shot.firstHit === null) { foul = true; reasons.push('Ingen boll träffades'); }
+    else {
+      const ft = typeOf(shot.firstHit);
+      if (group) {
+        const req = mineLeft.length > 0 ? group : 'eight';
+        if (ft !== req) { foul = true; reasons.push(req === 'eight' ? 'Åttan skulle träffas först' : 'Fel boll träffades först'); }
+      } else if (ft === 'eight') { foul = true; reasons.push('Åttan träffades först'); }
+    }
+    if (!foul && potted.length === 0 && !shot.railAfter) { foul = true; reasons.push('Ingen boll nådde kudden'); }
+
+    let newGroup = group;
+    if (potted.includes(8)) {
+      if (group && mineLeft.length === 0 && !foul) win = true; else loss = true;
+    }
+    if (!group && !foul && !loss) {
+      const types = new Set(potted.filter(id => id !== 8).map(typeOf));
+      if (types.size === 1) newGroup = [...types][0];
+    }
+    let legalPots = 0;
+    if (!loss) {
+      const g = newGroup;
+      legalPots = potted.filter(id => id !== 8 && (!g || typeOf(id) === g)).length + (win ? 1 : 0);
+    }
+    return { foul, reasons, win, loss, newGroup, potted, cueIn, legalPots, ballInHand: foul };
+  }
+
+  return { R, HX, HZ, DT, VMAX, POCKETS, JAWS, CG, SG, JAW_C, JAW_S, JAW_D, makeRack, step, anyMoving, isMoving, strike, castAim, legalPlacement, evaluateShot, typeOf, nameOf, newBall, DRILLS };
+})();
+
+
+</script>
+<script>
+/* ============================================================
+   8-Ball Pool – 3D övningsläge (Three.js r128)
+   ============================================================ */
+(function () {
+  'use strict';
+  const P = PHYS, R = P.R, HX = P.HX, HZ = P.HZ;
+  const $ = id => document.getElementById(id);
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const fail = msg => { const l = $('loading'); l.classList.remove('hide'); l.innerHTML = '<div class="lmsg">' + msg + '</div>'; };
+
+  if (typeof THREE === 'undefined') { fail('Kunde inte ladda 3D-biblioteket (Three.js).<br>Kontrollera anslutningen och ladda om sidan.'); return; }
+
+  /* ---------------- Renderer & scen ---------------- */
+  const canvas = $('c');
+  let renderer;
+  try {
+    renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+  } catch (e) { fail('Din webbläsare kunde inte starta WebGL, som krävs för 3D-grafiken.'); return; }
+  let pixelRatio = Math.min(window.devicePixelRatio || 1, 1.25);
+  renderer.setPixelRatio(pixelRatio);
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFShadowMap;
+  renderer.shadowMap.autoUpdate = false;
+  renderer.outputEncoding = THREE.sRGBEncoding;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.1;
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x06080b);
+  scene.fog = new THREE.Fog(0x06080b, 300, 950);
+
+  const camera = new THREE.PerspectiveCamera(40, 1, 5, 2500);
+  const desired = new THREE.PerspectiveCamera(40, 1, 5, 2500);
+  const maxAniso = renderer.capabilities.getMaxAnisotropy();
+
+  /* ---------------- Texturer ---------------- */
+  function makeCanvas(w, h) { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; }
+  function texFrom(c, srgb, rep) {
+    const t = new THREE.CanvasTexture(c);
+    t.encoding = srgb === false ? THREE.LinearEncoding : THREE.sRGBEncoding;
+    t.anisotropy = maxAniso;
+    if (rep) { t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(rep[0], rep[1]); }
+    return t;
+  }
+  function rnd(a, b) { return a + Math.random() * (b - a); }
+
+  function clothCanvas() {
+    const c = makeCanvas(512, 512), g = c.getContext('2d');
+    g.fillStyle = '#efefef'; g.fillRect(0, 0, 512, 512);
+    const id = g.getImageData(0, 0, 512, 512), d = id.data;
+    for (let y = 0; y < 512; y++) for (let x = 0; x < 512; x++) {
+      const i = (y * 512 + x) * 4;
+      const weave = ((x + y) & 1) ? 5 : -5;
+      const n = (Math.random() - 0.5) * 30 + weave;
+      d[i] = clamp(d[i] + n * 0.7, 0, 255); d[i + 1] = clamp(d[i + 1] + n * 0.7, 0, 255); d[i + 2] = clamp(d[i + 2] + n * 0.7, 0, 255);
+    }
+    g.putImageData(id, 0, 0);
+    return c;
+  }
+  const clothC = clothCanvas();
+
+  function woodTexture() {
+    const c = makeCanvas(1024, 512), g = c.getContext('2d');
+    const grad = g.createLinearGradient(0, 0, 0, 512);
+    grad.addColorStop(0, '#d2d2d2'); grad.addColorStop(0.5, '#ececec'); grad.addColorStop(1, '#c6c6c6');
+    g.fillStyle = grad; g.fillRect(0, 0, 1024, 512);
+    for (let i = 0; i < 420; i++) {
+      const y = Math.random() * 512, a = rnd(0.04, 0.2);
+      g.strokeStyle = Math.random() < 0.6 ? 'rgba(0,0,0,' + a * 1.5 + ')' : 'rgba(255,255,255,' + a * 0.6 + ')';
+      g.lineWidth = rnd(0.6, 2.6);
+      g.beginPath(); g.moveTo(0, y);
+      let yy = y;
+      for (let x = 0; x <= 1024; x += 64) { yy += rnd(-3, 3); g.lineTo(x, yy); }
+      g.stroke();
+    }
+    return c;
+  }
+  const woodC = woodTexture();
+
+  function floorTexture() {
+    const c = makeCanvas(512, 512), g = c.getContext('2d');
+    g.fillStyle = '#2a1d15'; g.fillRect(0, 0, 512, 512);
+    for (let i = 0; i < 8; i++) {
+      const y = i * 64;
+      g.fillStyle = 'rgba(' + (30 + rnd(0, 25)) + ',' + (18 + rnd(0, 14)) + ',10,1)';
+      g.fillRect(0, y, 512, 62);
+      g.fillStyle = 'rgba(0,0,0,0.5)'; g.fillRect(0, y + 62, 512, 2);
+      for (let k = 0; k < 40; k++) { g.fillStyle = 'rgba(0,0,0,' + rnd(0.03, 0.12) + ')'; g.fillRect(rnd(0, 512), y + rnd(0, 60), rnd(30, 160), 1); }
+      g.fillStyle = 'rgba(0,0,0,0.45)'; g.fillRect(((i * 197) % 512), y, 2, 64);
+    }
+    return c;
+  }
+
+  function blobTexture() {
+    const c = makeCanvas(64, 64), g = c.getContext('2d');
+    const gr = g.createRadialGradient(32, 32, 2, 32, 32, 32);
+    gr.addColorStop(0, 'rgba(0,0,0,0.55)'); gr.addColorStop(0.6, 'rgba(0,0,0,0.25)'); gr.addColorStop(1, 'rgba(0,0,0,0)');
+    g.fillStyle = gr; g.fillRect(0, 0, 64, 64);
+    return texFrom(c);
+  }
+
+  const BALL_COL = { 1: '#f3c321', 2: '#1b4fc4', 3: '#d9302a', 4: '#5b2a8c', 5: '#f27c1c', 6: '#118342', 7: '#7d1f25', 8: '#0f0f10' };
+  const ballColor = n => BALL_COL[n > 8 ? n - 8 : n];
+  function ballCanvas(n) {
+    const c = makeCanvas(1024, 512), g = c.getContext('2d'), w = 1024, h = 512;
+    const ivory = '#f5f1e6';
+    if (n === 0) {
+      g.fillStyle = ivory; g.fillRect(0, 0, w, h);
+      g.fillStyle = '#c7372b';
+      for (const u of [0, 0.25, 0.5, 0.75]) { g.beginPath(); g.arc(w * u, h / 2, 9, 0, 7); g.fill(); }
+      g.beginPath(); g.arc(w * 0.125, h * 0.3, 7, 0, 7); g.fill();
+      g.beginPath(); g.arc(w * 0.625, h * 0.7, 7, 0, 7); g.fill();
+      return c;
+    }
+    const col = ballColor(n);
+    if (n > 8) { g.fillStyle = ivory; g.fillRect(0, 0, w, h); g.fillStyle = col; g.fillRect(0, h * 0.285, w, h * 0.43); }
+    else { g.fillStyle = col; g.fillRect(0, 0, w, h); }
+    for (const u of [0.25, 0.75]) {
+      g.fillStyle = ivory; g.beginPath(); g.arc(w * u, h / 2, h * 0.145, 0, 7); g.fill();
+      g.fillStyle = '#111'; g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.font = '800 ' + Math.round(h * (n > 9 ? 0.15 : 0.19)) + 'px Arial, Helvetica, sans-serif';
+      g.fillText(String(n), w * u, h / 2 + 3);
+    }
+    return c;
+  }
+
+  /* ---------------- Miljökarta (reflektioner) ---------------- */
+  (function buildEnv() {
+    const pm = new THREE.PMREMGenerator(renderer);
+    const env = new THREE.Scene();
+    env.add(new THREE.Mesh(new THREE.BoxGeometry(80, 50, 80), new THREE.MeshBasicMaterial({ color: 0x0c1016, side: THREE.BackSide })));
+    function emit(w, h, col, k, x, y, z, rx, ry) {
+      const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ color: new THREE.Color(col).multiplyScalar(k), side: THREE.DoubleSide }));
+      m.position.set(x, y, z); m.rotation.set(rx || 0, ry || 0, 0); env.add(m);
+    }
+    emit(30, 5, 0xfff2dc, 9, -9, 22, 0, Math.PI / 2, 0);
+    emit(30, 5, 0xfff2dc, 9, 9, 22, 0, Math.PI / 2, 0);
+    emit(18, 12, 0xcfe0ff, 2.2, -39, 6, 0, 0, Math.PI / 2);
+    emit(18, 12, 0xffd9a8, 2.0, 39, 6, 6, 0, -Math.PI / 2);
+    emit(24, 8, 0xffe9c8, 1.2, 0, 8, -39, 0, 0);
+    scene.environment = pm.fromScene(env, 0.03).texture;
+    pm.dispose();
+  })();
+
+  /* ---------------- Ljus ---------------- */
+  scene.add(new THREE.HemisphereLight(0x8fa4c0, 0x1a120c, 0.32));
+  function spot(x) {
+    const s = new THREE.SpotLight(0xfff0d8, 0.8, 0, 0.95, 0.85, 1);
+    s.position.set(x, 175, 0);
+    s.target.position.set(x * 0.2, 0, 0);
+    s.castShadow = (x > 0);
+    s.shadow.mapSize.set(1024, 1024);
+    s.shadow.camera.near = 60; s.shadow.camera.far = 420;
+    s.shadow.bias = -0.0004; s.shadow.radius = 5;
+    scene.add(s); scene.add(s.target);
+    return s;
+  }
+  const spots = [spot(-58), spot(58)];
+  spots[1].intensity = 1.0; spots[0].intensity = 0.7;
+
+  /* ---------------- Rum ---------------- */
+  const FLOOR_Y = -82;
+  (function buildRoom() {
+    const ft = texFrom(floorTexture(), true, [14, 14]);
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(1100, 1100), new THREE.MeshStandardMaterial({ map: ft, roughness: 0.55, metalness: 0, envMapIntensity: 0.5 }));
+    floor.rotation.x = -Math.PI / 2; floor.position.y = FLOOR_Y; floor.receiveShadow = true; scene.add(floor);
+    const wallsC = makeCanvas(8, 256), wg = wallsC.getContext('2d');
+    const gr = wg.createLinearGradient(0, 0, 0, 256);
+    gr.addColorStop(0, '#10161c'); gr.addColorStop(0.55, '#1b2630'); gr.addColorStop(1, '#2a1d15');
+    wg.fillStyle = gr; wg.fillRect(0, 0, 8, 256);
+    const room = new THREE.Mesh(new THREE.BoxGeometry(1100, 520, 1100), new THREE.MeshStandardMaterial({ map: texFrom(wallsC), side: THREE.BackSide, roughness: 0.95, envMapIntensity: 0.2 }));
+    room.position.y = FLOOR_Y + 260; scene.add(room);
+    // golvlist + lysande väggpaneler
+    const glow = new THREE.MeshBasicMaterial({ color: new THREE.Color(1.0, 0.72, 0.42).multiplyScalar(0.9) });
+    for (const [x, z, ry] of [[-300, -549, 0], [300, -549, 0], [-549, -250, Math.PI / 2], [-549, 250, Math.PI / 2], [549, 0, -Math.PI / 2], [0, 549, Math.PI]]) {
+      const p = new THREE.Mesh(new THREE.PlaneGeometry(46, 12), glow);
+      p.position.set(x, 30, z); p.rotation.y = ry; scene.add(p);
+    }
+  })();
+
+  /* ---------------- Bord ---------------- */
+  const table = new THREE.Group(); scene.add(table);
+  const IX = HX + 8, IZ = HZ + 8, OX = HX + 24, OZ = HZ + 24;
+
+  const clothTexA = texFrom(clothC, true, [26, 13]);
+  const clothTexB = texFrom(clothC, true, [0.05, 0.05]);
+  clothTexA.anisotropy = clothTexB.anisotropy = maxAniso;
+  const clothMat = new THREE.MeshStandardMaterial({ map: clothTexA, roughness: 0.96, metalness: 0, envMapIntensity: 0.12 });
+  const cushionMat = new THREE.MeshStandardMaterial({ map: clothTexB, roughness: 0.9, metalness: 0, envMapIntensity: 0.12 });
+  const woodTex = texFrom(woodC, true, [0.011, 0.011]);
+  const woodMat = new THREE.MeshStandardMaterial({ map: woodTex, roughness: 0.38, metalness: 0.05, envMapIntensity: 1.0 });
+  const woodDark = new THREE.MeshStandardMaterial({ map: woodTex, roughness: 0.45, metalness: 0.05, envMapIntensity: 0.8 });
+
+  const cloth = new THREE.Mesh(new THREE.PlaneGeometry(2 * IX, 2 * IZ), clothMat);
+  cloth.rotation.x = -Math.PI / 2; cloth.receiveShadow = true; table.add(cloth);
+  const slate = new THREE.Mesh(new THREE.BoxGeometry(2 * IX, 4, 2 * IZ), new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 1 }));
+  slate.position.y = -2.05; table.add(slate);
+
+  // fickor (svarta skivor)
+  const pocketMat = new THREE.MeshBasicMaterial({ color: 0x020202 });
+  for (const p of P.POCKETS) {
+    const m = new THREE.Mesh(new THREE.CircleGeometry(p.corner ? 8.6 : 7.8, 40), pocketMat);
+    m.rotation.x = -Math.PI / 2; m.position.set(p.x, 0.04, p.z); table.add(m);
+  }
+
+  function arcPts(list, cx, cz, r, a1, a2, n) {
+    for (let i = 0; i <= n; i++) { const a = a1 + (a2 - a1) * i / n; list.push([cx + r * Math.cos(a), cz + r * Math.sin(a)]); }
+  }
+  function holeLoop() {
+    const q1 = [];
+    const sc = { cz: HZ + 4, r: 8.5 };
+    arcPts(q1, 0, sc.cz, sc.r, Math.PI / 2, Math.atan2(IZ - sc.cz, Math.sqrt(sc.r * sc.r - (IZ - sc.cz) ** 2)), 12);
+    const cc = { cx: HX + 2.5, cz: HZ + 2.5, r: 9.5 };
+    const dz = IZ - cc.cz, dx = Math.sqrt(cc.r * cc.r - dz * dz);
+    const a1 = Math.atan2(dz, -dx);
+    const dx2 = IX - cc.cx, dz2 = -Math.sqrt(cc.r * cc.r - dx2 * dx2);
+    const a2 = Math.atan2(dz2, dx2);
+    arcPts(q1, cc.cx, cc.cz, cc.r, a1, a2, 26);
+    q1.push([IX, 0]);
+    const mz = q1.map(p => [p[0], -p[1]]).reverse();
+    const rot = q1.map(p => [-p[0], -p[1]]);
+    const mx = q1.map(p => [-p[0], p[1]]).reverse();
+    const all = q1.concat(mz, rot, mx), out = [];
+    for (const p of all) {
+      const l = out[out.length - 1];
+      if (!l || Math.hypot(p[0] - l[0], p[1] - l[1]) > 1e-4) out.push(p);
+    }
+    const f = out[0], l = out[out.length - 1];
+    if (Math.hypot(f[0] - l[0], f[1] - l[1]) < 1e-4) out.pop();
+    return out;
+  }
+  function roundedRect(s, x, y, w, h, r) {
+    s.moveTo(x + r, y); s.lineTo(x + w - r, y); s.quadraticCurveTo(x + w, y, x + w, y + r);
+    s.lineTo(x + w, y + h - r); s.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+    s.lineTo(x + r, y + h); s.quadraticCurveTo(x, y + h, x, y + h - r);
+    s.lineTo(x, y + r); s.quadraticCurveTo(x, y, x + r, y);
+  }
+  // träramen med fickhål
+  (function buildFrame() {
+    const shape = new THREE.Shape();
+    roundedRect(shape, -OX, -OZ, 2 * OX, 2 * OZ, 8);
+    const hole = new THREE.Path();
+    hole.setFromPoints(holeLoop().map(p => new THREE.Vector2(p[0], -p[1])));
+    shape.holes.push(hole);
+    const geo = new THREE.ExtrudeGeometry(shape, { depth: 5, bevelEnabled: true, bevelThickness: 1.1, bevelSize: 0.9, bevelOffset: -0.9, bevelSegments: 3, curveSegments: 12 });
+    geo.rotateX(-Math.PI / 2);
+    const m = new THREE.Mesh(geo, woodMat); m.castShadow = true; m.receiveShadow = true; table.add(m);
+  })();
+
+  // kuddar
+  function cushion(pts) {
+    const s = new THREE.Shape();
+    s.moveTo(pts[0][0], -pts[0][1]);
+    for (let i = 1; i < pts.length; i++) s.lineTo(pts[i][0], -pts[i][1]);
+    s.closePath();
+    const geo = new THREE.ExtrudeGeometry(s, { depth: 3.4, bevelEnabled: true, bevelThickness: 0.8, bevelSize: 0.5, bevelOffset: -0.5, bevelSegments: 2 });
+    geo.rotateX(-Math.PI / 2);
+    const m = new THREE.Mesh(geo, cushionMat); m.castShadow = true; m.receiveShadow = true; table.add(m);
+  }
+  const SG = P.SG, CG = P.CG;
+  for (const sz of [-1, 1]) for (const sx of [-1, 1]) {
+    // långsida: nos vid |z| = HZ, mellan sidofickan och hörnfickan
+    const a = SG, b = HX - CG;
+    cushion([[sx * a, sz * HZ], [sx * b, sz * HZ], [sx * (b + P.JAW_C), sz * (HZ + P.JAW_D)], [sx * (a - P.JAW_S), sz * (HZ + P.JAW_D)]]);
+  }
+  for (const sx of [-1, 1]) {
+    const e = HZ - CG;
+    cushion([[sx * HX, -e], [sx * HX, e], [sx * (HX + P.JAW_D), e + P.JAW_C], [sx * (HX + P.JAW_D), -(e + P.JAW_C)]]);
+  }
+
+  // underrede
+  (function buildBase() {
+    const skirt = new THREE.Mesh(new THREE.BoxGeometry(2 * OX - 6, 15, 2 * OZ - 6), woodDark);
+    skirt.position.y = -8.5; skirt.castShadow = true; skirt.receiveShadow = true; table.add(skirt);
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+      const leg = new THREE.Mesh(new THREE.BoxGeometry(14, 68, 14), woodDark);
+      leg.position.set(sx * (OX - 14), -50, sz * (OZ - 14)); leg.castShadow = true; leg.receiveShadow = true; table.add(leg);
+      const foot = new THREE.Mesh(new THREE.CylinderGeometry(6, 7, 2, 20), new THREE.MeshStandardMaterial({ color: 0x1b1b1b, metalness: 0.8, roughness: 0.4 }));
+      foot.position.set(sx * (OX - 14), FLOOR_Y + 1, sz * (OZ - 14)); table.add(foot);
+    }
+  })();
+
+  // diamanter
+  (function diamonds() {
+    const geo = new THREE.CylinderGeometry(0.75, 0.75, 0.3, 16);
+    const mat = new THREE.MeshStandardMaterial({ color: 0xf2ecd9, roughness: 0.25, metalness: 0.3 });
+    const y = 6.45;
+    for (const sz of [-1, 1]) for (let j = -3; j <= 3; j++) {
+      if (j === 0) continue;
+      const m = new THREE.Mesh(geo, mat); m.position.set(HX * j / 4, y, sz * (HZ + 15)); table.add(m);
+    }
+    for (const sx of [-1, 1]) for (let j = -1; j <= 1; j++) {
+      const m = new THREE.Mesh(geo, mat); m.position.set(sx * (HX + 15), y, HZ * j / 2); table.add(m);
+    }
+    // krita
+    const chalk = new THREE.Mesh(new THREE.BoxGeometry(3.4, 3.4, 3.4), new THREE.MeshStandardMaterial({ color: 0x2f64c9, roughness: 0.95 }));
+    chalk.position.set(-40, 7.9, HZ + 17); chalk.rotation.y = 0.4; chalk.castShadow = true; table.add(chalk);
+  })();
+
+  // lampor
+  const lamp = new THREE.Group(); scene.add(lamp);
+  (function buildLamp() {
+    const shadeMat = new THREE.MeshStandardMaterial({ color: 0x0f3d2a, roughness: 0.35, metalness: 0.5, side: THREE.DoubleSide });
+    const bulbMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(1, 0.95, 0.82).multiplyScalar(3) });
+    for (const x of [-58, 58]) {
+      const sh = new THREE.Mesh(new THREE.CylinderGeometry(7, 26, 20, 40, 1, true), shadeMat);
+      sh.position.set(x, 185, 0); lamp.add(sh);
+      const bulb = new THREE.Mesh(new THREE.CircleGeometry(21, 32), bulbMat);
+      bulb.rotation.x = Math.PI / 2; bulb.position.set(x, 176, 0); lamp.add(bulb);
+      const cap = new THREE.Mesh(new THREE.CylinderGeometry(3, 3, 8, 12), new THREE.MeshStandardMaterial({ color: 0xb08a3c, metalness: 0.9, roughness: 0.3 }));
+      cap.position.set(x, 198, 0); lamp.add(cap);
+      const rod = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.4, 260, 6), new THREE.MeshBasicMaterial({ color: 0x14181d }));
+      rod.position.set(x, 330, 0); lamp.add(rod);
+    }
+  })();
+
+  /* ---------------- Bollar ---------------- */
+  const meshes = [], blobs = [];
+  const blobTex = blobTexture();
+  const ballGeo = new THREE.SphereGeometry(R, 36, 26);
+  const _q = new THREE.Quaternion(), _v = new THREE.Vector3();
+  for (let i = 0; i < 16; i++) {
+    const mat = new THREE.MeshStandardMaterial({
+      map: texFrom(ballCanvas(i)), roughness: 0.1, metalness: 0.05, envMapIntensity: 1.3
+    });
+    const m = new THREE.Mesh(ballGeo, mat);
+    m.castShadow = true; m.receiveShadow = false;
+    m.quaternion.setFromEuler(new THREE.Euler(rnd(0, 6.28), rnd(0, 6.28), rnd(0, 6.28)));
+    scene.add(m); meshes.push(m);
+    const bl = new THREE.Mesh(new THREE.PlaneGeometry(R * 3.6, R * 3.6), new THREE.MeshBasicMaterial({ map: blobTex, transparent: true, depthWrite: false, opacity: 0.8 }));
+    bl.rotation.x = -Math.PI / 2; bl.position.y = 0.05; scene.add(bl); blobs.push(bl);
+  }
+
+  /* ---------------- Kö, siktlinjer ---------------- */
+  const CUE_LEN = 143.5;
+  const cueYaw = new THREE.Group(), cueTilt = new THREE.Group();
+  scene.add(cueYaw); cueYaw.add(cueTilt);
+  let cueMats = null;
+  (function buildCue() {
+    function seg(x0, x1, r0, r1, mat) {
+      const geo = new THREE.CylinderGeometry(r1, r0, x1 - x0, 14, 1);
+      geo.rotateZ(-Math.PI / 2); geo.translate((x0 + x1) / 2, 0, 0);
+      const m = new THREE.Mesh(geo, mat); m.castShadow = true; cueTilt.add(m);
+    }
+    const mChalk = new THREE.MeshStandardMaterial({ color: 0x3567c9, roughness: 0.95 });
+    const mFer = new THREE.MeshStandardMaterial({ color: 0xf0ede4, roughness: 0.3 });
+    const mShaft = new THREE.MeshStandardMaterial({ color: 0xe9d0a2, roughness: 0.3, envMapIntensity: 0.9 });
+    const mSteel = new THREE.MeshStandardMaterial({ color: 0xc3c7cc, roughness: 0.25, metalness: 0.95 });
+    const mButt = new THREE.MeshStandardMaterial({ color: 0x2c1710, roughness: 0.3 });
+    const mWrap = new THREE.MeshStandardMaterial({ color: 0x0d0d0d, roughness: 0.85 });
+    const mGold = new THREE.MeshStandardMaterial({ color: 0xd8b04a, roughness: 0.28, metalness: 0.95 });
+    cueMats = { shaft: mShaft, butt: mButt, wrap: mWrap, gold: mGold };
+    seg(0, 0.8, 0.55, 0.55, mChalk);
+    seg(0.8, 3.3, 0.6, 0.6, mFer);
+    seg(3.3, 74, 0.62, 1.0, mShaft);
+    seg(74, 76, 1.08, 1.08, mSteel);
+    seg(76, 100, 1.12, 1.36, mButt);
+    seg(100, 119, 1.4, 1.4, mWrap);
+    seg(119, 141, 1.42, 1.68, mButt);
+    seg(141, 143.5, 1.7, 1.7, mWrap);
+    for (const x of [76.4, 99.6, 119.4, 130]) seg(x - 0.3, x + 0.3, 1.5, 1.5, mGold);
+  })();
+  cueYaw.visible = false;
+
+  function ribbon(color, op) {
+    const g = new THREE.Group();
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ color, transparent: true, opacity: op, depthWrite: false }));
+    m.rotation.x = -Math.PI / 2; m.position.x = 0.5; g.add(m);
+    g.position.y = 0.07; g.visible = false; scene.add(g);
+    return g;
+  }
+  function setRibbon(rb, x, z, dx, dz, len, th) {
+    rb.visible = len > 0.05;
+    rb.position.x = x; rb.position.z = z; rb.rotation.y = -Math.atan2(dz, dx); rb.scale.set(len, 1, th);
+  }
+  const rbMain = ribbon(0xffffff, 0.55), rbObj = ribbon(0xffe08a, 0.8), rbCue = ribbon(0xffffff, 0.35);
+  function ringMesh(color, op, r0, r1) {
+    const m = new THREE.Mesh(new THREE.RingGeometry(r0, r1, 48), new THREE.MeshBasicMaterial({ color, transparent: true, opacity: op, depthWrite: false, side: THREE.DoubleSide }));
+    m.rotation.x = -Math.PI / 2; m.position.y = 0.08; m.visible = false; scene.add(m); return m;
+  }
+  const breakLine = ribbon(0xffffff, 0.45);
+  const kitchen = new THREE.Mesh(new THREE.PlaneGeometry(HX / 2, 2 * HZ), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.08, depthWrite: false }));
+  kitchen.rotation.x = -Math.PI / 2; kitchen.position.set(-HX * 0.75, 0.06, 0); kitchen.visible = false; scene.add(kitchen);
+  const ghostRing = ringMesh(0xffffff, 0.85, R - 0.3, R);
+  const placeRing = ringMesh(0x6dff9a, 0.9, R + 0.8, R + 1.5);
+
+  /* ---------------- Ljud ---------------- */
+  let AC = null, master = null, noiseBuf = null, lastSnd = 0;
+  function ensureAudio() {
+    if (AC) { if (AC.state === 'suspended') AC.resume().catch(() => { }); return; }
+    try {
+      AC = new (window.AudioContext || window.webkitAudioContext)();
+      master = AC.createGain(); master.gain.value = 0.55; master.connect(AC.destination);
+      noiseBuf = AC.createBuffer(1, Math.floor(AC.sampleRate * 0.6), AC.sampleRate);
+      const d = noiseBuf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    } catch (e) { AC = null; }
+  }
+  function tone(f0, f1, dur, vol, type) {
+    if (!AC || !S.sound) return;
+    const o = AC.createOscillator(), g = AC.createGain(), t = AC.currentTime;
+    o.type = type || 'sine'; o.frequency.setValueAtTime(f0, t); o.frequency.exponentialRampToValueAtTime(Math.max(20, f1), t + dur);
+    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g); g.connect(master); o.start(t); o.stop(t + dur + 0.02);
+  }
+  function noise(dur, vol, ftype, freq, q) {
+    if (!AC || !S.sound) return;
+    const s = AC.createBufferSource(), f = AC.createBiquadFilter(), g = AC.createGain(), t = AC.currentTime;
+    s.buffer = noiseBuf; f.type = ftype; f.frequency.value = freq; f.Q.value = q || 1;
+    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    s.connect(f); f.connect(g); g.connect(master); s.start(t, Math.random() * 0.2); s.stop(t + dur + 0.02);
+  }
+  const sfx = {
+    ball(v) { const n = performance.now(); if (n - lastSnd < 12) return; lastSnd = n; const k = clamp(v / 250, 0.04, 1); tone(2300 + rnd(-150, 150), 1400, 0.05, 0.35 * k, 'triangle'); noise(0.035, 0.45 * k, 'bandpass', 3200, 1.2); },
+    cushion(v) { const k = clamp(v / 250, 0.04, 1); tone(120, 60, 0.12, 0.5 * k, 'sine'); noise(0.07, 0.25 * k, 'lowpass', 900, 0.7); },
+    pocket(v) { const k = clamp(v / 200 + 0.3, 0.3, 1); tone(110, 50, 0.22, 0.6 * k, 'sine'); noise(0.28, 0.3 * k, 'lowpass', 600, 0.8); setTimeout(() => noise(0.12, 0.2 * k, 'bandpass', 1500, 2), 160); },
+    cue(p) { tone(900, 420, 0.06, 0.3 + 0.5 * p, 'triangle'); noise(0.04, 0.4 + 0.4 * p, 'bandpass', 2600, 1.5); }
+  };
+
+  /* ---------------- Spelstate ---------------- */
+  const S = {
+    state: 'aim', aim: 0, camYaw: 0, pitch: 0.5, dist: 102, power: 0.7, sa: 0, sb: 0,
+    group: null, shots: 0, fouls: 0, streak: 0, best: 0, good: 0, cleared: 0,
+    guide: true, top: false, topBefore: null, sound: true,
+    mp: null, oppGroup: null,
+    mode: 'free', drill: 0, round: 1, attempts: 0, score: 0,
+    balls: [], shot: null, still: 0, acc: 0, anim: null, follow: null, undo: null, over: false, camTarget: new THREE.Vector3(-HX / 2, R, 0)
+  };
+  const cue = () => S.balls[0];
+
+  /* ---------------- HUD ---------------- */
+  const trayEls = {};
+  function badge(n, cls) {
+    const e = document.createElement('span');
+    e.className = 'ball' + (n > 8 ? ' stripe' : '') + (cls ? ' ' + cls : '');
+    e.style.setProperty('--c', ballColor(n));
+    e.innerHTML = '<i>' + n + '</i>';
+    return e;
+  }
+  (function buildTray() {
+    const t = $('tray');
+    for (let n = 1; n <= 15; n++) {
+      const e = badge(n); trayEls[n] = e; t.appendChild(e);
+      if (n === 7) { const s = document.createElement('span'); s.className = 'sep'; t.appendChild(s); }
+    }
+  })();
+  let toastTimer = 0;
+  function toast(msg, kind, ms) {
+    const b = $('banner');
+    b.textContent = msg; b.className = 'show ' + (kind || '');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { b.className = ''; }, ms || 3200);
+  }
+  function updateHUD() {
+    $('st-shots').textContent = S.shots;
+    $('st-fouls').textContent = S.fouls;
+    $('st-streak').textContent = S.best;
+    $('st-acc').textContent = S.shots ? Math.round(100 * S.good / S.shots) + '%' : '–';
+    $('st-cleared').textContent = S.cleared;
+    for (let n = 1; n <= 15; n++) {
+      const b = S.balls[n]; const el = trayEls[n];
+      el.classList.toggle('gone', !!(b && b.out));
+      el.classList.toggle('mine', !!S.group && P.typeOf(n) === S.group);
+      el.classList.toggle('theirs', !!S.mp && !!S.oppGroup && P.typeOf(n) === S.oppGroup);
+    }
+    $('tray').style.display = (S.mode === 'drill' || S.mode === 'oneball') ? 'none' : '';
+    if (S.mp) $('group').textContent = mpLabel(); else
+    if (S.mode !== 'free') $('group').textContent = modeLabel(); else
+    $('group').textContent = S.group ? 'Du spelar ' + P.nameOf(S.group) + (S.group === 'solid' ? ' (1–7)' : ' (9–15)') : 'Öppet bord';
+    $('btn-undo').disabled = !!S.mp || !(S.undo && (S.state === 'aim' || S.state === 'place' || S.over));
+    $('btn-new').disabled = !!S.mp;
+    $('btn-view').classList.toggle('on', S.top);
+    $('btn-guide').classList.toggle('on', S.guide);
+    $('btn-sound').classList.toggle('on', S.sound);
+    $('shoot').disabled = S.state !== 'aim' && S.state !== 'place';
+    $('shoot').textContent = S.state === 'place' ? 'PLACERA HÄR' : (S.mp && (S.state === 'watch' || S.state === 'roll' || S.state === 'strike') && !(S.mp.iShot && S.mp.seat === S.mp.G.turn) ? 'MOTSTÅNDARENS TUR' : 'SKJUT');
+    $('pfill').style.height = (S.power * 100) + '%';
+    $('plabel').textContent = Math.round(S.power * 100) + '%';
+    $('spindot').style.left = (50 + (S.sa / 0.75) * 40) + '%';
+    $('spindot').style.top = (50 - (S.sb / 0.75) * 40) + '%';
+  }
+
+  /* ---------------- Modal ---------------- */
+  function showModal(title, text, buttons) {
+    $('mtitle').textContent = title; $('mtext').textContent = text;
+    const w = $('mbtns'); w.innerHTML = '';
+    for (const b of buttons) { const e = document.createElement('button'); e.textContent = b.label; if (b.primary) e.className = 'primary'; e.onclick = () => { hideModal(); b.fn(); }; w.appendChild(e); }
+    $('modal').classList.add('show');
+  }
+  function hideModal() { $('modal').classList.remove('show'); }
+
+  /* ---------------- Rack / återställning ---------------- */
+  function resetRack(full) {
+    S.balls = P.makeRack();
+    if (S.mode === 'drill') applyDrill(S.drill);
+    else if (S.mode === 'oneball') { S.round = 1; S.attempts = 0; S.score = 0; spawnOneBall(); }
+    for (let i = 0; i < 16; i++) { meshes[i].visible = !S.balls[i].out; blobs[i].visible = !S.balls[i].out; }
+    S.group = null; S.state = 'aim'; S.over = false; S.undo = null; S.shot = null; S.anim = null; S.follow = null; S.still = 0; S.acc = 0;
+    if (full) { S.shots = 0; S.fouls = 0; S.streak = 0; S.best = 0; S.good = 0; }
+    S.aim = 0; S.camYaw = 0;
+    if (S.mode === 'drill' || S.mode === 'oneball') {
+      S.state = 'aim'; S.breakPlace = false; S.topBefore = null; S.top = false;
+      S.camTarget.set(cue().x, R, cue().z);
+      hideModal(); updateHUD();
+      toast(S.mode === 'drill' ? P.DRILLS[S.drill].desc : 'Sänk bollen! Du har tre försök per runda.', '', 4000);
+      return;
+    }
+    S.state = 'place'; S.breakPlace = true; S.topBefore = false; S.top = true;
+    S.camTarget.set(cue().x, R, cue().z);
+    hideModal(); updateHUD();
+    toast('Bryt racket! Placera vita bollen i det markerade området och tryck PLACERA HÄR.', '', 4500);
+  }
+
+  /* ---------------- Skott ---------------- */
+  function snapshot() {
+    return {
+      balls: S.balls.map(b => ({ x: b.x, z: b.z, out: b.out })),
+      group: S.group, shots: S.shots, fouls: S.fouls, streak: S.streak, best: S.best, good: S.good,
+      round: S.round, attempts: S.attempts, score: S.score
+    };
+  }
+  function undoShot() {
+    const u = S.undo; if (!u || !(S.state === 'aim' || S.state === 'place' || S.over)) return;
+    S.balls.forEach((b, i) => { const s = u.balls[i]; b.x = s.x; b.z = s.z; b.out = s.out; b.vx = b.vz = b.wx = b.wy = b.wz = 0; b.sink = null; b.pocket = undefined; });
+    for (let i = 0; i < 16; i++) { meshes[i].visible = !S.balls[i].out; blobs[i].visible = !S.balls[i].out; }
+    S.round = u.round; S.attempts = u.attempts; S.score = u.score;
+    S.group = u.group; S.shots = u.shots; S.fouls = u.fouls; S.streak = u.streak; S.best = u.best; S.good = u.good;
+    S.undo = null; S.over = false; S.state = 'aim'; S.breakPlace = false; S.shot = null; hideModal();
+    if (S.topBefore !== null) { S.top = S.topBefore; S.topBefore = null; }
+    updateHUD(); toast('Skottet ångrades.', '', 1800);
+  }
+
+  function startShot(remote) {
+    if (S.state !== 'aim' || S.over) return;
+    if (S.mp && remote !== true && !mpMyTurn()) return;
+    ensureAudio();
+    S.undo = S.mp ? null : snapshot();
+    S.shot = { firstHit: null, pocketed: [], railAfter: false, onTableBefore: S.balls.filter(b => b.id !== 0 && !b.out).map(b => b.id) };
+    const pw = S.power;
+    S.anim = { t: 0, pull: 0.32 + 0.3 * pw, hold: 0.1, fwd: 0.17 - 0.1 * pw, pd: 3 + 26 * pw, done: false };
+    if (S.mp) { S.mp.iShot = remote !== true; S.mp.waiting = false; if (remote !== true) mpEmitShot(); }
+    S.state = 'strike'; updateHUD();
+  }
+
+  function onEv(type, a, b, v) {
+    if (type === 'ball') {
+      if ((a.id === 0 || b.id === 0) && S.shot && S.shot.firstHit === null) S.shot.firstHit = (a.id === 0 ? b : a).id;
+      sfx.ball(v);
+    } else if (type === 'cushion') {
+      if (S.shot && S.shot.firstHit !== null) S.shot.railAfter = true;
+      sfx.cushion(v);
+    } else if (type === 'pocket') {
+      a.vx = a.vz = a.wx = a.wy = a.wz = 0;
+      a.sink = { t: 0, fx: a.x, fz: a.z };
+      if (S.shot) S.shot.pocketed.push(a.id);
+      sfx.pocket(v);
+    }
+  }
+
+  function finishShot() {
+    if (S.mp) { finishShotMp(); return; }
+    if (S.mode !== 'free') { finishShotAlt(); return; }
+    const res = P.evaluateShot({ group: S.group }, S.shot);
+    S.shots++;
+    if (res.foul) { S.fouls++; S.streak = 0; }
+    else if (res.legalPots > 0) { S.streak++; S.best = Math.max(S.best, S.streak); S.good++; }
+    else S.streak = 0;
+    const hadGroup = !!S.group;
+    if (!S.group && res.newGroup) S.group = res.newGroup;
+    S.shot = null; S.state = 'aim';
+
+    if (res.win) {
+      S.cleared++; S.over = true; updateHUD();
+      toast('Åttan i hål!', 'good', 2500);
+      showModal('Bordet klarat! 🎱', 'Du klarade bordet på ' + S.shots + ' skott (' + S.fouls + ' foul). Träffprocent: ' + Math.round(100 * S.good / S.shots) + '%.',
+        [{ label: 'Ångra sista skottet', fn: undoShot }, { label: 'Ny rack', primary: true, fn: () => resetRack(true) }]);
+      return;
+    }
+    if (res.loss) {
+      S.over = true; updateHUD();
+      showModal('Åttan i hål för tidigt', res.reasons.length ? res.reasons.join(' · ') : 'Åttan sänktes innan din grupp var klar.',
+        [{ label: 'Ångra skottet', fn: undoShot }, { label: 'Ny rack', primary: true, fn: () => resetRack(true) }]);
+      return;
+    }
+    // vit boll i hål => lägg tillbaka
+    const c = cue();
+    if (c.out) {
+      c.out = false; c.sink = null; c.vx = c.vz = c.wx = c.wy = c.wz = 0;
+      c.x = -HX / 2; c.z = 0;
+      let tries = 0;
+      while (!P.legalPlacement(S.balls, c.x, c.z) && tries++ < 400) { c.x = rnd(-HX + 6, HX - 6); c.z = rnd(-HZ + 6, HZ - 6); }
+      meshes[0].visible = true; blobs[0].visible = true;
+    }
+    if (res.ballInHand) {
+      enterPlace();
+      toast('Foul: ' + res.reasons.join(' · ') + '. Boll i hand!', 'bad', 4500);
+    } else if (res.legalPots > 0) {
+      toast(res.legalPots === 1 ? 'Bra! Fortsätt skjuta.' : res.legalPots + ' bollar i hål – bra!', 'good', 2200);
+    } else {
+      toast('Ingen boll i hål.', '', 1800);
+    }
+    if (!hadGroup && S.group) setTimeout(() => toast('Du spelar ' + P.nameOf(S.group) + ' bollar.', 'good', 2600), res.ballInHand ? 4600 : 2300);
+    S.camTarget.set(c.x, R, c.z);
+    updateHUD();
+  }
+
+  /* ---------------- Boll i hand ---------------- */
+  function enterPlace() {
+    S.state = 'place'; S.topBefore = S.top; S.top = true;
+    updateHUD();
+  }
+  function placeValid() { const c = cue(); return P.legalPlacement(S.balls, c.x, c.z) && (!S.breakPlace || c.x <= -HX / 2 + 0.01); }
+  function confirmPlace() {
+    if (S.state !== 'place' || S.over) return;
+    if (!placeValid()) { toast('Ogiltig placering – ligger för nära en annan boll.', 'bad', 1800); return; }
+    S.state = 'aim'; S.breakPlace = false;
+    if (S.topBefore !== null) { S.top = S.topBefore; S.topBefore = null; }
+    S.camTarget.set(cue().x, R, cue().z);
+    updateHUD();
+  }
+
+  /* ---------------- Kamera ---------------- */
+  function topHeight() {
+    const t = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+    return Math.max((HZ + 28) / t, (HX + 28) / (t * camera.aspect)) * 1.02;
+  }
+  function updateCamera(dt) {
+    if (S.menu) {
+      const a = performance.now() / 1000 * 0.07 + 0.6;
+      desired.up.set(0, 1, 0);
+      desired.position.set(Math.cos(a) * 250, 112, Math.sin(a) * 210);
+      desired.lookAt(0, -6, 0);
+      const km = 1 - Math.exp(-4 * dt);
+      camera.position.lerp(desired.position, km);
+      camera.quaternion.slerp(desired.quaternion, km);
+      lamp.visible = true;
+      return;
+    }
+    const c = cue();
+    if (S.state === 'aim' || S.state === 'place' || S.state === 'watch') S.camTarget.lerp(_v.set(c.x, R, c.z), 1 - Math.exp(-9 * dt));
+    if ((S.state === 'aim' || S.state === 'watch') && !S.top) S.camYaw = S.aim;
+    const k = 1 - Math.exp(-(S.top ? 7 : 12) * dt);
+    if (S.top) {
+      desired.up.set(0, 0, -1);
+      desired.position.set(0, topHeight(), 0);
+      desired.lookAt(0, 0, 0);
+    } else {
+      desired.up.set(0, 1, 0);
+      const dx = Math.cos(S.camYaw), dz = Math.sin(S.camYaw), cp = Math.cos(S.pitch), sp = Math.sin(S.pitch);
+      const t = S.camTarget;
+      desired.position.set(t.x - dx * S.dist * cp, R + S.dist * sp, t.z - dz * S.dist * cp);
+      desired.lookAt(t.x + dx * S.dist * 0.22, R * 0.6, t.z + dz * S.dist * 0.22);
+    }
+    camera.position.lerp(desired.position, k);
+    camera.quaternion.slerp(desired.quaternion, k);
+    lamp.visible = camera.position.y < 150;
+  }
+
+  /* ---------------- Kö-placering ---------------- */
+  function placeCue(gap) {
+    const c = cue();
+    const dx = Math.cos(S.aim), dz = Math.sin(S.aim);
+    const sx = -dz, sz = dx; // höger
+    const a = S.sa, b = S.sb;
+    const depth = Math.sqrt(Math.max(0, 1 - a * a - b * b)) * R;
+    const tx = c.x + sx * a * R - dx * (depth + gap);
+    const tz = c.z + sz * a * R - dz * (depth + gap);
+    const ty = R + b * R;
+    // höjning så kön inte går genom träramen
+    const IXr = HX + 8, IZr = HZ + 8;
+    let tIn = 1e9;
+    if (-dx > 1e-6) tIn = Math.min(tIn, (IXr - c.x) / -dx); else if (-dx < -1e-6) tIn = Math.min(tIn, (-IXr - c.x) / -dx);
+    if (-dz > 1e-6) tIn = Math.min(tIn, (IZr - c.z) / -dz); else if (-dz < -1e-6) tIn = Math.min(tIn, (-IZr - c.z) / -dz);
+    let e = 0.05;
+    if (tIn < CUE_LEN) e = Math.max(e, Math.atan2(8.6 - R, Math.max(tIn, 6)));
+    e = clamp(e, 0.04, 0.55);
+    cueYaw.position.set(tx, ty, tz);
+    cueYaw.rotation.y = Math.atan2(dz, -dx);
+    cueTilt.rotation.z = e;
+  }
+
+  /* ---------------- Uppdatering per bildruta ---------------- */
+  const keys = {};
+  function updateAimVisuals() {
+    const aimOn = !S.menu && S.state === 'aim' && S.guide;
+    if (!aimOn) { rbMain.visible = rbObj.visible = rbCue.visible = ghostRing.visible = false; return; }
+    const c = cue(), dx = Math.cos(S.aim), dz = Math.sin(S.aim);
+    const r = P.castAim(S.balls, c.x, c.z, dx, dz);
+    const ex = c.x + dx * r.t, ez = c.z + dz * r.t;
+    setRibbon(rbMain, c.x, c.z, dx, dz, r.t, 0.45);
+    ghostRing.visible = true; ghostRing.position.x = ex; ghostRing.position.z = ez;
+    if (r.ball) {
+      const q = r.ball;
+      const nx = (q.x - ex) / (2 * R), nz = (q.z - ez) / (2 * R);
+      setRibbon(rbObj, q.x, q.z, nx, nz, 30, 0.5);
+      let tx = dx - (dx * nx + dz * nz) * nx, tz = dz - (dx * nx + dz * nz) * nz;
+      const tl = Math.hypot(tx, tz);
+      if (tl > 0.06) setRibbon(rbCue, ex, ez, tx / tl, tz / tl, 8 + 14 * tl, 0.4); else rbCue.visible = false;
+    } else { rbObj.visible = false; rbCue.visible = false; }
+  }
+
+  function updateInput(dt) {
+    if (S.state === 'aim') {
+      const fine = keys.Shift ? 0.05 : 0.3;
+      if (keys.ArrowLeft) S.aim -= fine * dt;
+      if (keys.ArrowRight) S.aim += fine * dt;
+      if (keys.ArrowLeft || keys.ArrowRight) S.camYaw = S.aim;
+    }
+    if (keys.ArrowUp) { S.power = clamp(S.power + 0.5 * dt, 0.03, 1); updateHUD(); }
+    if (keys.ArrowDown) { S.power = clamp(S.power - 0.5 * dt, 0.03, 1); updateHUD(); }
+  }
+
+  const ease = { out: u => 1 - (1 - u) * (1 - u), in: u => u * u };
+  let shadowSig = '', shadowForce = 3;
+  function frame(dt) {
+    if (!S.menu) updateInput(dt);
+    let simT = 0;
+
+    if (S.menu) {
+      cueYaw.visible = !!S.custom;
+      if (S.custom) { cueYaw.position.set(-45, 13, 30); cueYaw.rotation.y = 0.22; cueTilt.rotation.z = 0.02; }
+    } else if (S.state === 'strike') {
+      const a = S.anim; a.t += dt;
+      const pw = S.power;
+      const gap0 = 2.0;
+      let gap;
+      if (a.t < a.pull) gap = gap0 + a.pd * ease.out(a.t / a.pull);
+      else if (a.t < a.pull + a.hold) gap = gap0 + a.pd;
+      else {
+        const u = clamp((a.t - a.pull - a.hold) / a.fwd, 0, 1);
+        gap = (gap0 + a.pd) * (1 - ease.in(u));
+        if (u >= 1 && !a.done) {
+          a.done = true;
+          const c = cue();
+          P.strike(c, Math.cos(S.aim), Math.sin(S.aim), pw, S.sa, S.sb);
+          sfx.cue(pw);
+          S.state = 'roll'; S.still = 0; S.acc = 0;
+          S.follow = { t: 0 };
+          S.camTarget.set(c.x, R, c.z);
+        }
+      }
+      placeCue(gap);
+      cueYaw.visible = true;
+    } else if (S.state === 'roll') {
+      S.acc += Math.min(dt, 1 / 30);
+      let steps = 0;
+      while (S.acc >= P.DT && steps < 24) { P.step(S.balls, P.DT, onEv); S.acc -= P.DT; simT += P.DT; steps++; }
+      if (S.follow) {
+        S.follow.t += dt;
+        placeCue(-Math.min(S.follow.t * 60, 5));
+        if (S.follow.t > 0.3) { cueYaw.visible = false; S.follow = null; }
+      }
+      let sinking = false;
+      for (const b of S.balls) if (b.sink) sinking = true;
+      if (!P.anyMoving(S.balls) && !sinking) { S.still += dt; if (S.still > 0.4) finishShot(); } else S.still = 0;
+    } else if (S.state === 'aim') {
+      placeCue(2.0);
+      cueYaw.visible = true;
+    } else if (S.state === 'watch' && S.mp) {
+      mpWatchPresence();
+    } else {
+      cueYaw.visible = false;
+    }
+
+    // synka bollar
+    for (const b of S.balls) {
+      const m = meshes[b.id], bl = blobs[b.id];
+      if (b.sink) {
+        b.sink.t += dt / 0.4;
+        const k = Math.min(1, b.sink.t), e = k * k, pk = P.POCKETS[b.pocket];
+        m.position.set(b.sink.fx + (pk.x - b.sink.fx) * e, R - e * (2 * R + 4), b.sink.fz + (pk.z - b.sink.fz) * e);
+        bl.visible = false;
+        if (k >= 1) { m.visible = false; b.sink = null; updateHUD(); }
+        continue;
+      }
+      if (b.out) { m.visible = false; bl.visible = false; continue; }
+      m.visible = true; bl.visible = true;
+      m.position.set(b.x, R, b.z);
+      bl.position.x = b.x; bl.position.z = b.z;
+      if (simT > 0) {
+        const w = Math.hypot(b.wx, b.wy, b.wz);
+        if (w > 1e-3) { _q.setFromAxisAngle(_v.set(b.wx / w, b.wy / w, b.wz / w), w * simT); m.quaternion.premultiply(_q); }
+      }
+    }
+
+    // markör vid placering
+    if (S.state === 'place' && !S.menu) {
+      const c = cue();
+      placeRing.visible = true; placeRing.position.x = c.x; placeRing.position.z = c.z;
+      placeRing.material.color.set(placeValid() ? 0x6dff9a : 0xff5a5a);
+    } else placeRing.visible = false;
+    const bp = S.state === 'place' && S.breakPlace && !S.menu;
+    kitchen.visible = bp;
+    if (bp) setRibbon(breakLine, -HX / 2, -HZ, 0, 1, 2 * HZ, 0.5); else breakLine.visible = false;
+
+    if (S.mp) mpTick();
+    updateAimVisuals();
+    updateCamera(dt);
+    const cq = cue();
+    const sig = S.state + S.aim.toFixed(3) + S.sa.toFixed(2) + S.sb.toFixed(2) + cq.x.toFixed(1) + cq.z.toFixed(1) + S.power.toFixed(2);
+    if (S.state === 'roll' || S.state === 'strike' || sig !== shadowSig || shadowForce > 0) { renderer.shadowMap.needsUpdate = true; shadowForce = Math.max(0, shadowForce - 1); }
+    shadowSig = sig;
+  }
+
+  /* ---------------- Inmatning ---------------- */
+  const ray = new THREE.Raycaster(), ndc = new THREE.Vector2(), gplane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -R);
+  function groundPoint(e) {
+    const r = canvas.getBoundingClientRect();
+    ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+    ray.setFromCamera(ndc, camera);
+    const p = new THREE.Vector3();
+    return ray.ray.intersectPlane(gplane, p) ? p : null;
+  }
+  function pointAim(e) {
+    const g = groundPoint(e); if (!g) return;
+    const c = cue();
+    if (S.state === 'place') {
+      c.x = clamp(g.x, -HX + R + 0.2, S.breakPlace ? -HX / 2 : HX - R - 0.2); c.z = clamp(g.z, -HZ + R + 0.2, HZ - R - 0.2);
+    } else if (S.state === 'aim' && Math.hypot(g.x - c.x, g.z - c.z) > 4) {
+      S.aim = Math.atan2(g.z - c.z, g.x - c.x); S.camYaw = S.aim;
+    }
+  }
+
+  const ptrs = new Map(); let drag = null, pinch0 = 0;
+  canvas.addEventListener('pointerdown', e => {
+    ensureAudio();
+    try { canvas.setPointerCapture(e.pointerId); } catch (_) { }
+    ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (ptrs.size === 2) { const [a, b] = [...ptrs.values()]; pinch0 = Math.hypot(a.x - b.x, a.y - b.y); drag = null; return; }
+    drag = { id: e.pointerId, x: e.clientX, y: e.clientY, moved: 0 };
+    if (S.state === 'place' || (S.top && S.state === 'aim')) pointAim(e);
+  });
+  canvas.addEventListener('pointermove', e => {
+    if (!ptrs.has(e.pointerId)) { if (S.state === 'place' && e.pointerType === 'mouse') pointAim(e); return; }
+    ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (ptrs.size === 2) {
+      const [a, b] = [...ptrs.values()]; const d = Math.hypot(a.x - b.x, a.y - b.y);
+      if (pinch0 > 0) S.dist = clamp(S.dist * pinch0 / d, 45, 240);
+      pinch0 = d; return;
+    }
+    if (!drag || drag.id !== e.pointerId) return;
+    const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+    drag.x = e.clientX; drag.y = e.clientY; drag.moved += Math.abs(dx) + Math.abs(dy);
+    if (S.state === 'place' || (S.top && S.state === 'aim')) { pointAim(e); return; }
+    if (S.top) return;
+    const sens = e.shiftKey ? 0.0009 : 0.0045;
+    if (S.state === 'aim') { S.aim += dx * sens; S.camYaw = S.aim; }
+    else S.camYaw += dx * 0.005;
+    S.pitch = clamp(S.pitch + dy * 0.004, 0.1, 1.45);
+  });
+  function endPtr(e) {
+    ptrs.delete(e.pointerId); pinch0 = 0;
+    if (drag && drag.id === e.pointerId) {
+      if (S.state === 'place' && e.pointerType === 'mouse' && e.type === 'pointerup') { pointAim(e); confirmPlace(); }
+      drag = null;
+    }
+  }
+  canvas.addEventListener('pointerup', endPtr);
+  canvas.addEventListener('pointercancel', endPtr);
+  canvas.addEventListener('wheel', e => { e.preventDefault(); S.dist = clamp(S.dist * Math.exp(e.deltaY * 0.0012), 45, 240); }, { passive: false });
+  canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+  window.addEventListener('keydown', e => {
+    if (e.target && /INPUT|TEXTAREA/.test(e.target.tagName)) return;
+    if (S.menu) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); startPlay(); }
+      else if (e.key === 'Escape' && S.started) startPlay();
+      return;
+    }
+    if (e.key === 'Escape') { openMenu(); return; }
+    if (e.key === 'Shift') keys.Shift = true;
+    if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) { keys[e.key] = true; e.preventDefault(); return; }
+    if (e.key === ' ' || e.key === 'Enter') {
+      e.preventDefault(); if (e.repeat) return;
+      if (S.state === 'aim') startShot(); else if (S.state === 'place') confirmPlace();
+      return;
+    }
+    const k = e.key.toLowerCase();
+    if (e.repeat) return;
+    if (k === 't') toggleView(); else if (k === 'g') toggleGuide(); else if (k === 'm') toggleSound();
+    else if (k === 'u') undoShot(); else if (k === 'r') { if (!S.mp) resetRack(true); }
+  });
+  window.addEventListener('keyup', e => { if (e.key === 'Shift') keys.Shift = false; keys[e.key] = false; });
+  window.addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
+
+  function toggleView() { if (S.state === 'place') return; S.top = !S.top; if (!S.top) S.camYaw = S.aim; updateHUD(); }
+  function toggleGuide() { S.guide = !S.guide; updateHUD(); updateSettingsUI(); }
+  function toggleSound() { S.sound = !S.sound; ensureAudio(); updateHUD(); updateSettingsUI(); try { localStorage.setItem('pool8.snd', S.sound ? '1' : '0'); } catch (_) { } }
+  $('btn-view').onclick = toggleView;
+  $('btn-guide').onclick = toggleGuide;
+  $('btn-sound').onclick = toggleSound;
+  $('btn-undo').onclick = undoShot;
+  $('btn-new').onclick = () => { if (!S.mp) resetRack(true); };
+  $('shoot').onclick = () => { ensureAudio(); if (S.state === 'aim') startShot(); else if (S.state === 'place') confirmPlace(); };
+
+  // kraftreglage
+  (function () {
+    const el = $('power'); let on = false;
+    const set = e => { const r = $('ptrack').getBoundingClientRect(); S.power = clamp(1 - (e.clientY - r.top) / r.height, 0.03, 1); updateHUD(); };
+    el.addEventListener('pointerdown', e => { on = true; el.setPointerCapture(e.pointerId); set(e); });
+    el.addEventListener('pointermove', e => { if (on) set(e); });
+    el.addEventListener('pointerup', () => { on = false; });
+    el.addEventListener('pointercancel', () => { on = false; });
+  })();
+  // effektval
+  (function () {
+    const el = $('spin'); let on = false;
+    const set = e => {
+      const r = el.getBoundingClientRect();
+      let nx = ((e.clientX - r.left) / r.width) * 2 - 1, ny = ((e.clientY - r.top) / r.height) * 2 - 1;
+      const l = Math.hypot(nx, ny); if (l > 1) { nx /= l; ny /= l; }
+      const m = 0.75; S.sa = nx * m * 0.93; S.sb = -ny * m * 0.93;
+      const sl = Math.hypot(S.sa, S.sb); if (sl > m) { S.sa *= m / sl; S.sb *= m / sl; }
+      updateHUD();
+    };
+    el.addEventListener('pointerdown', e => { on = true; el.setPointerCapture(e.pointerId); set(e); });
+    el.addEventListener('pointermove', e => { if (on) set(e); });
+    el.addEventListener('pointerup', () => { on = false; });
+    el.addEventListener('dblclick', () => { S.sa = 0; S.sb = 0; updateHUD(); });
+  })();
+
+  /* ---------------- Storlek & loop ---------------- */
+  function resize() {
+    const w = window.innerWidth, h = window.innerHeight;
+    renderer.setSize(w, h, false);
+    camera.aspect = desired.aspect = w / h;
+    camera.updateProjectionMatrix(); desired.updateProjectionMatrix();
+    document.body.classList.toggle('narrow', w < 720);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  let last = performance.now(), fAcc = 0, fN = 0, first = true;
+  function loop(now) {
+    requestAnimationFrame(loop);
+    let dt = (now - last) / 1000; last = now;
+    if (dt > 0.1) dt = 0.1;
+    try { frame(dt); } catch (err) { console.error(err); }
+    renderer.render(scene, camera);
+    if (first) { first = false; $('loading').classList.add('hide'); }
+    // adaptiv kvalitet
+    fAcc += dt; fN++;
+    if (fN >= 45) {
+      const fps = fN / fAcc; fAcc = 0; fN = 0;
+      if (fps < 42 && !first && S.autoQ) {
+        if (pixelRatio > 0.8) { pixelRatio = Math.max(0.75, pixelRatio - 0.25); renderer.setPixelRatio(pixelRatio); resize(); }
+        else if (renderer.shadowMap.enabled) { renderer.shadowMap.enabled = false; spots[1].castShadow = false; scene.traverse(o => { if (o.material) o.material.needsUpdate = true; }); }
+      }
+    }
+  }
+
+  /* ---------------- Spellägen ---------------- */
+  const MODES = [
+    { id: 'free', name: 'Fri övning', desc: '8-ball med riktiga regler, utan motståndare.' },
+    { id: 'clear', name: 'Rensa bordet', desc: 'Sänk alla 15 bollar på så få skott som möjligt. Vit boll i hål ger +1 skott.' },
+    { id: 'oneball', name: 'Träna på en boll', desc: '10 rundor med en boll åt gången. Tre försök per boll.' }
+  ];
+  function bestKey(m, d) { return 'pool8.best.' + m + (m === 'drill' ? '.' + P.DRILLS[d].id : ''); }
+  function getBest(m, d) { try { const v = localStorage.getItem(bestKey(m, d)); return v === null ? null : parseInt(v, 10); } catch (_) { return null; } }
+  function setBest(m, d, val, higher) {
+    const b = getBest(m, d);
+    if (b === null || (higher ? val > b : val < b)) { try { localStorage.setItem(bestKey(m, d), String(val)); } catch (_) { } return true; }
+    return false;
+  }
+  function objectsLeft() { return S.balls.filter(b => b.id > 0 && !b.out).length; }
+  function modeLabel() {
+    if (S.mode === 'clear') return 'Rensa bordet · ' + objectsLeft() + ' kvar';
+    if (S.mode === 'drill') return P.DRILLS[S.drill].name + ' · ' + objectsLeft() + ' kvar';
+    if (S.mode === 'oneball') return 'Runda ' + Math.min(S.round, 10) + '/10 · Poäng ' + S.score + ' · Försök ' + Math.min(S.attempts + 1, 3) + '/3';
+    return '';
+  }
+  function modeName() { return S.mode === 'drill' ? P.DRILLS[S.drill].name : MODES.find(m => m.id === S.mode).name; }
+  function clearTable(keep) {
+    for (const b of S.balls) { b.out = b.id !== 0 && !keep.includes(b.id); b.vx = b.vz = b.wx = b.wy = b.wz = 0; b.sink = null; b.pocket = undefined; }
+  }
+  function applyDrill(i) {
+    const m = P.DRILLS[i].make();
+    clearTable(m.balls.map(b => b[0]));
+    cue().out = false; cue().x = m.cue[0]; cue().z = m.cue[1];
+    for (const [id, x, z] of m.balls) { S.balls[id].x = x; S.balls[id].z = z; }
+    const o = m.balls[0];
+    S.aim = Math.atan2(o[2] - m.cue[1], o[1] - m.cue[0]); S.camYaw = S.aim;
+  }
+  function spawnOneBall() {
+    clearTable([1]);
+    const c = cue(), o = S.balls[1]; c.out = false;
+    for (let k = 0; k < 300; k++) {
+      o.x = rnd(-HX + 18, HX - 18); o.z = rnd(-HZ + 14, HZ - 14);
+      c.x = rnd(-HX + 10, HX - 10); c.z = rnd(-HZ + 8, HZ - 8);
+      if (Math.hypot(o.x - c.x, o.z - c.z) > 35) break;
+    }
+    S.aim = Math.atan2(o.z - c.z, o.x - c.x); S.camYaw = S.aim;
+    S.state = 'aim';
+    for (let i = 0; i < 16; i++) { meshes[i].visible = !S.balls[i].out; blobs[i].visible = !S.balls[i].out; }
+    S.camTarget.set(c.x, R, c.z);
+  }
+  function modeDone(title, text) {
+    S.over = true; updateHUD();
+    showModal(title, text, [
+      { label: 'Ångra sista skottet', fn: undoShot },
+      { label: 'Meny', fn: () => { resetRack(true); openMenu(); } },
+      { label: 'Spela igen', primary: true, fn: () => resetRack(true) }
+    ]);
+  }
+  function finishShotAlt() {
+    const pot = S.shot.pocketed.filter(id => id !== 0), cueIn = S.shot.pocketed.includes(0);
+    S.shots++; S.shot = null; S.state = 'aim';
+    const good = pot.length > 0 && !cueIn;
+    if (cueIn) { S.fouls++; S.streak = 0; if (S.mode !== 'oneball') S.shots++; }
+    else if (good) { S.streak++; S.best = Math.max(S.best, S.streak); S.good++; }
+    else S.streak = 0;
+    const c = cue();
+    if (c.out) {
+      c.out = false; c.sink = null; c.vx = c.vz = c.wx = c.wy = c.wz = 0; c.x = -HX / 2; c.z = 0;
+      let tries = 0;
+      while (!P.legalPlacement(S.balls, c.x, c.z) && tries++ < 400) { c.x = rnd(-HX + 6, HX - 6); c.z = rnd(-HZ + 6, HZ - 6); }
+      meshes[0].visible = true; blobs[0].visible = true;
+    }
+    let newLayout = false;
+    if (S.mode === 'oneball') {
+      if (good) { S.score++; S.round++; S.attempts = 0; newLayout = true; toast('Bra! Boll i hål.', 'good', 1800); }
+      else { S.attempts++; if (S.attempts >= 3) { S.round++; S.attempts = 0; newLayout = true; toast('Inga försök kvar – nästa runda.', 'bad', 2000); } else toast(cueIn ? 'Vita bollen i hål.' : 'Miss. Försök igen.', cueIn ? 'bad' : '', 1800); }
+      if (S.round > 10) {
+        const nb = setBest('oneball', 0, S.score, true), b = getBest('oneball', 0);
+        modeDone('Klart! ' + S.score + ' / 10', (nb ? 'Nytt rekord!' : 'Ditt rekord: ' + b + ' / 10.') + ' Träffprocent: ' + Math.round(100 * S.good / S.shots) + '%.');
+        return;
+      }
+      if (newLayout) spawnOneBall();
+    } else if (objectsLeft() === 0) {
+      if (S.mode === 'clear') S.cleared++;
+      const nb = setBest(S.mode, S.drill, S.shots, false), b = getBest(S.mode, S.drill);
+      modeDone('Klarat på ' + S.shots + ' skott', (nb ? 'Nytt rekord! ' : 'Ditt rekord: ' + b + ' skott. ') + (S.fouls ? S.fouls + ' foul (+1 skott var).' : 'Utan foul.'));
+      return;
+    } else if (!cueIn) {
+      toast(good ? (pot.length + (pot.length === 1 ? ' boll i hål – ' : ' bollar i hål – ') + objectsLeft() + ' kvar.') : 'Ingen boll i hål.', good ? 'good' : '', 2000);
+    }
+    if (cueIn && !newLayout) { enterPlace(); toast('Vita bollen i hål – boll i hand!' + (S.mode !== 'oneball' ? ' (+1 skott)' : ''), 'bad', 3500); }
+    S.camTarget.set(cue().x, R, cue().z);
+    updateHUD();
+  }
+  function setMode(m, d) {
+    if (S.mp) mpLeave(true);
+    S.mode = m; S.drill = d || 0;
+    $('h-modename').textContent = modeName();
+    resetRack(true); startPlay();
+  }
+  function buildModeUI() {
+    const wrap = $('modelist'); wrap.innerHTML = '';
+    function card(title, desc, best, fn, parent) {
+      const b = document.createElement('button'); b.className = 'mcard';
+      b.innerHTML = '<b>' + title + (best ? '<em>' + best + '</em>' : '') + '</b><span>' + desc + '</span>';
+      b.onclick = fn; (parent || wrap).appendChild(b);
+    }
+    for (const m of MODES) {
+      const bv = m.id === 'free' ? null : getBest(m.id, 0);
+      card(m.name, m.desc, bv === null ? '' : (m.id === 'oneball' ? 'Rekord ' + bv + '/10' : 'Rekord ' + bv + ' skott'), () => setMode(m.id, 0));
+    }
+    const h = document.createElement('h3'); h.textContent = 'Övningsuppställningar'; wrap.appendChild(h);
+    const grid = document.createElement('div'); grid.className = 'mgrid'; wrap.appendChild(grid);
+    P.DRILLS.forEach((d, i) => { const bv = getBest('drill', i); card(d.name, d.desc, bv === null ? '' : 'Rekord ' + bv, () => setMode('drill', i), grid); });
+  }
+
+  /* ---------------- Flerspelare (turordnat, via rum) ---------------- */
+  const MP_ALPHA = 'abcdefghjkmnpqrstuvwxyz23456789';
+  let mpNameVal = 'Spelare';
+  try { mpNameVal = localStorage.getItem('pool8.name') || 'Spelare'; } catch (_) { }
+  function mpClean(n) { return String(n || '').replace(/[^\p{L}\p{N} _.-]/gu, '').trim().slice(0, 16) || 'Spelare'; }
+  function mpCode() { let s = ''; for (let i = 0; i < 5; i++) s += MP_ALPHA[Math.floor(Math.random() * MP_ALPHA.length)]; return s; }
+  function mpStatus(msg, code) {
+    const el = $('mp-status'); el.textContent = '';
+    if (code) {
+      const a = document.createElement('div'); a.textContent = 'Rumskod:'; el.appendChild(a);
+      const c = document.createElement('div'); c.className = 'code'; c.textContent = code.toUpperCase(); el.appendChild(c);
+    }
+    const m = document.createElement('div'); m.textContent = msg; el.appendChild(m);
+  }
+  function mpViewers() { return S.mp ? S.mp.room.peers().filter(p => p.kind === 'viewer') : []; }
+  function mpPresent(label) { return mpViewers().some(p => p.peer === label); }
+  function mpNameOf(label) {
+    const p = S.mp && S.mp.room.peers().find(q => q.peer === label);
+    return (p && p.presence && typeof p.presence.nm === 'string' && mpClean(p.presence.nm)) || 'Motspelare';
+  }
+  function mpSeatName(seat) { const G = S.mp.G; return G.players[seat] === S.mp.me ? 'Du' : mpNameOf(G.players[seat]); }
+  function mpMyTurn() { return !!(S.mp && S.mp.G && S.mp.seat >= 0 && S.mp.seat === S.mp.G.turn); }
+  function mpOwner() {
+    const G = S.mp.G; if (!G) return false;
+    for (const l of G.players) if (mpPresent(l)) return l === S.mp.me;
+    return false;
+  }
+  function mpLabel() {
+    const mp = S.mp, G = mp.G;
+    if (!G) return 'Väntar på motspelare…';
+    const turn = mp.seat < 0 ? mpNameOf(G.players[G.turn]) + 's tur' : (mpMyTurn() ? 'DIN TUR' : mpNameOf(G.players[G.turn]).toUpperCase() + 'S TUR');
+    const opp = mp.seat >= 0 ? G.players[1 - mp.seat] : null;
+    const gone = opp && !mpPresent(opp) ? ' · motspelaren frånkopplad' : '';
+    const grp = S.group ? ' · du: ' + P.nameOf(S.group) : (mp.seat >= 0 ? ' · öppet bord' : '');
+    return turn + grp + gone;
+  }
+  const ballsOut = () => S.balls.map(b => [+b.x.toFixed(2), +b.z.toFixed(2), b.out ? 1 : 0]);
+  function mpEmit(topic, data) { S.mp.room.emit(topic, data).catch(() => { }); }
+  function mpEmitShot() {
+    const mp = S.mp, G = mp.G;
+    mpEmit('mp.shot', { e: G.e, n: G.n + 1, aim: +S.aim.toFixed(4), power: +S.power.toFixed(3), sa: +S.sa.toFixed(3), sb: +S.sb.toFixed(3), balls: ballsOut() });
+  }
+  function validG(g) {
+    return g && typeof g === 'object' && Array.isArray(g.players) && g.players.length === 2 && Array.isArray(g.balls) && g.balls.length === 16 &&
+      (g.turn === 0 || g.turn === 1) && Number.isFinite(g.e) && Number.isFinite(g.n) && Array.isArray(g.groups);
+  }
+  function mpEvText(G) {
+    const ev = G.ev; if (!ev) return '';
+    const mine = ev.by === S.mp.seat, who = mpSeatName(ev.by), opp = mpSeatName(1 - ev.by);
+    const r = (ev.r || []).join(' · ');
+    if (ev.k === 'pot') return mine ? 'Bra! Du sänkte ' + ev.c + (ev.c === 1 ? ' boll' : ' bollar') + '. Fortsätt!' : who + ' sänkte ' + ev.c + (ev.c === 1 ? ' boll' : ' bollar') + ' och fortsätter.';
+    if (ev.k === 'miss') return mine ? 'Ingen boll i hål. Nu skjuter ' + opp + '.' : who + ' missade. Din tur!';
+    if (ev.k === 'foul') return mine ? 'Foul: ' + r + '. ' + opp + ' får boll i hand.' : who + ' gjorde foul: ' + r + '. Du får boll i hand!';
+    if (ev.k === 'start') return '';
+    return '';
+  }
+  function mpBallsApply(arr) {
+    S.balls.forEach((b, i) => {
+      const a = arr[i]; b.x = +a[0]; b.z = +a[1]; b.out = !!a[2];
+      b.vx = b.vz = b.wx = b.wy = b.wz = 0; b.sink = null; b.pocket = undefined;
+    });
+    for (let i = 0; i < 16; i++) { meshes[i].visible = !S.balls[i].out; blobs[i].visible = !S.balls[i].out; }
+  }
+  function mpApply(G) {
+    const mp = S.mp; mp.G = G; mp.pending = null; mp.waiting = false;
+    hideModal();
+    mpBallsApply(G.balls);
+    const mePeer = mp.room.peers().find(p => p.isMe && p.sameTab); if (mePeer) mp.me = mePeer.peer;
+    mp.seat = G.players.indexOf(mp.me);
+    S.group = mp.seat >= 0 ? G.groups[mp.seat] : null;
+    S.oppGroup = mp.seat >= 0 ? G.groups[1 - mp.seat] : null;
+    S.shots = G.n; S.over = false; S.mode = 'free'; S.undo = null; S.shot = null; S.anim = null; S.follow = null; S.still = 0; S.acc = 0;
+    const wasPlace = S.state === 'place';
+    if (G.over) {
+      S.over = true; S.state = 'watch';
+      const winner = G.over.w === mp.seat;
+      const title = mp.seat < 0 ? mpNameOf(G.players[G.over.w]) + ' vann' : (winner ? 'Du vann! 🎱' : mpNameOf(G.players[G.over.w]) + ' vann');
+      showModal(title, G.over.t || '', [{ label: 'Lämna rummet', fn: () => mpLeave(false) }].concat(mp.seat >= 0 ? [{ label: 'Spela igen', primary: true, fn: mpRematch }] : []));
+      updateHUD(); return;
+    }
+    const mine = mp.seat >= 0 && mp.seat === G.turn;
+    S.breakPlace = !!(mine && G.brk);
+    if (mine && (G.hand || G.brk)) {
+      if (!wasPlace) { S.topBefore = S.top; S.top = true; }
+      S.state = 'place';
+      if (G.brk) { const c = cue(); c.out = false; if (c.x > -HX / 2) { c.x = -HX / 2; c.z = 0; } }
+    } else {
+      if (wasPlace && S.topBefore !== null) { S.top = S.topBefore; S.topBefore = null; }
+      S.state = mine ? 'aim' : 'watch';
+      if (mine) {
+        const c = cue(); let best = null, bd = 1e9;
+        for (const b of S.balls) if (b.id > 0 && !b.out) { const d = Math.hypot(b.x - c.x, b.z - c.z); if (d < bd) { bd = d; best = b; } }
+        if (best) S.aim = Math.atan2(best.z - c.z, best.x - c.x);
+      }
+    }
+    S.camTarget.set(cue().x, R, cue().z); S.camYaw = S.aim;
+    const tx = mpEvText(G);
+    if (tx) toast(tx, G.ev.k === 'foul' ? (G.ev.by === mp.seat ? 'bad' : 'good') : (G.ev.k === 'pot' && G.ev.by === mp.seat ? 'good' : ''), 4200);
+    else if (G.n === 0 && mine) toast('Du bryter! Placera vita bollen bakom linjen och tryck PLACERA HÄR.', '', 4500);
+    else if (G.n === 0) toast(mpNameOf(G.players[G.turn]) + ' bryter.', '', 3000);
+    updateHUD();
+  }
+  function mpNewRack(e, players, turn) {
+    return { e, n: 0, players, turn, groups: [null, null], balls: P.makeRack().map(b => [+b.x.toFixed(2), +b.z.toFixed(2), 0]), brk: true, hand: false, over: null, ev: null };
+  }
+  function mpRematch() {
+    const mp = S.mp, G = mp.G; if (!G || mp.seat < 0) return;
+    const g2 = mpNewRack(G.e + 1, G.players, (G.e + 1) % 2);
+    mpEmit('mp.state', g2); mpApply(g2);
+  }
+  function finishShotMp() {
+    const mp = S.mp, G = mp.G;
+    if (!mp.iShot) {
+      S.shot = null; S.state = 'watch'; mp.waiting = true; mp.waitSince = performance.now();
+      if (mp.pending) mpApply(mp.pending);
+      updateHUD(); return;
+    }
+    const seat = G.turn;
+    S.group = G.groups[seat];
+    const res = P.evaluateShot({ group: S.group }, S.shot);
+    S.shot = null;
+    const c = cue();
+    if (c.out) {
+      c.out = false; c.sink = null; c.vx = c.vz = c.wx = c.wy = c.wz = 0; c.x = -HX / 2; c.z = 0;
+      let tries = 0;
+      while (!P.legalPlacement(S.balls, c.x, c.z) && tries++ < 400) { c.x = rnd(-HX + 6, HX - 6); c.z = rnd(-HZ + 6, HZ - 6); }
+    }
+    const ng = Object.assign({}, G); ng.groups = G.groups.slice();
+    if (!G.groups[seat] && res.newGroup) { ng.groups[seat] = res.newGroup; ng.groups[1 - seat] = res.newGroup === 'solid' ? 'stripe' : 'solid'; }
+    ng.n = G.n + 1; ng.brk = false; ng.hand = false; ng.over = null;
+    const nm = mpSeatName(seat);
+    if (res.win) { ng.over = { w: seat, t: (seat === mp.seat ? 'Du sänkte åttan' : mpSeatName(seat) + ' sänkte åttan') + ' efter ' + ng.n + ' skott.' }; ng.ev = { k: 'win', by: seat }; }
+    else if (res.loss) { ng.over = { w: 1 - seat, t: nm + ' sänkte åttan för tidigt' + (res.reasons.length ? ' (' + res.reasons.join(' · ') + ')' : '') + '.' }; ng.ev = { k: 'loss', by: seat }; }
+    else if (res.foul) { ng.turn = 1 - seat; ng.hand = true; ng.ev = { k: 'foul', by: seat, r: res.reasons }; }
+    else if (res.legalPots > 0) { ng.turn = seat; ng.ev = { k: 'pot', by: seat, c: res.legalPots }; }
+    else { ng.turn = 1 - seat; ng.ev = { k: 'miss', by: seat }; }
+    ng.balls = ballsOut();
+    mpEmit('mp.state', ng);
+    mp.iShot = false;
+    mpApply(ng);
+  }
+  function mpWatchPresence() {
+    const mp = S.mp, G = mp.G; if (!G) return;
+    const p = mp.room.peers().find(q => q.peer === G.players[G.turn] && !q.isMe);
+    const pr = p && p.presence;
+    if (!pr || typeof pr.a !== 'number') { cueYaw.visible = false; return; }
+    S.aim = pr.a; S.sa = +pr.sa || 0; S.sb = +pr.sb || 0;
+    const c = cue();
+    if (pr.pl) { if (Number.isFinite(pr.cx) && Number.isFinite(pr.cz)) { c.x = pr.cx; c.z = pr.cz; } cueYaw.visible = false; }
+    else { cueYaw.visible = true; placeCue(2.0); }
+  }
+  function mpTick() {
+    const mp = S.mp; if (!mp.G) return;
+    if (mpMyTurn() && (S.state === 'aim' || S.state === 'place')) {
+      const c = cue();
+      const sig = [S.aim.toFixed(3), S.power.toFixed(2), S.sa.toFixed(2), S.sb.toFixed(2), c.x.toFixed(1), c.z.toFixed(1), S.state].join('|');
+      if (sig !== mp.psig) {
+        mp.psig = sig;
+        mp.room.presence({ a: +S.aim.toFixed(3), p: +S.power.toFixed(2), sa: +S.sa.toFixed(2), sb: +S.sb.toFixed(2), cx: +c.x.toFixed(1), cz: +c.z.toFixed(1), pl: S.state === 'place' ? 1 : 0 }).catch(() => { });
+      }
+    }
+    if (mp.waiting && performance.now() - mp.waitSince > 5000) { mp.waitSince = performance.now(); mpEmit('mp.req', { e: mp.G.e, n: mp.G.n }); }
+  }
+  function mpPeersChanged(ch) {
+    const mp = S.mp; if (!mp) return;
+    const me = mp.room.peers().find(p => p.isMe && p.sameTab); if (me) mp.me = me.peer;
+    if (mp.G && mp.seat < 0 && mp.me && mp.G.players.includes(mp.me)) { mpApply(mp.G); startPlay(); return; }
+    const viewers = mpViewers();
+    if (!mp.G) {
+      if (mp.host && viewers.length >= 2 && mp.me) {
+        const other = viewers.find(p => p.peer !== mp.me);
+        const g = mpNewRack(1, [mp.me, other.peer], 0);
+        mpEmit('mp.state', g); mpApply(g); startPlay();
+      } else if (mp.host) mpStatus('Väntar på att din vän går med…', mp.code);
+      return;
+    }
+    const G = mp.G;
+    if (mpOwner() && ch && ch.joined) {
+      for (const p of ch.joined) {
+        if (p.isMe || p.kind !== 'viewer') continue;
+        if (!G.players.includes(p.peer)) {
+          const vac = G.players.findIndex(l => !viewers.some(v => v.peer === l));
+          if (vac >= 0) { const g = Object.assign({}, G); g.players = G.players.slice(); g.players[vac] = p.peer; g.ev = null; mpEmit('mp.state', g); mpApply(g); continue; }
+        }
+        mpEmit('mp.state', G);
+      }
+    }
+    updateHUD();
+    if (ch && ch.left && ch.left.some(p => G.players.includes(p.peer) && p.peer !== mp.me)) toast('Motspelaren lämnade rummet. Väntar på att hen kommer tillbaka…', 'bad', 4000);
+  }
+  async function mpJoin(code, host) {
+    code = String(code || '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8);
+    if (code.length < 3) { mpStatus('Skriv in en rumskod.'); return; }
+    if (S.mp) mpLeave(true);
+    mpNameVal = mpClean($('mp-name').value || mpNameVal);
+    mpStatus('Ansluter…');
+    let rt = null;
+    try { rt = window.claude && await window.claude.use('room'); } catch (_) { rt = null; }
+    if (!rt) { mpStatus('Kunde inte ansluta till servern. Kontrollera att den körs.'); return; }
+    let room;
+    try { room = await rt.join('pool8-' + code); }
+    catch (e) { mpStatus('Kunde inte gå med i rummet (' + ((e && e.code) || 'fel') + ').'); return; }
+    const mp = S.mp = { room, code, host, me: null, G: null, pending: null, iShot: false, seat: -1, waiting: false, psig: '', unsubs: [] };
+    mp.unsubs.push(room.on('mp.state', m => {
+      if (!S.mp || S.mp !== mp || m.isMe) return;
+      const g = m.data; if (!validG(g)) return;
+      const cur = mp.G;
+      if (cur) {
+        if (g.e < cur.e || (g.e === cur.e && g.n < cur.n)) return;
+        if (!cur.players.includes(m.peer) && !g.players.includes(m.peer)) return;
+        if (g.e === cur.e && g.n === cur.n && g.turn === cur.turn && g.players[0] === cur.players[0] && g.players[1] === cur.players[1]) return;
+      }
+      if (S.state === 'roll' || S.state === 'strike') { mp.pending = g; return; }
+      const first = !cur;
+      mpApply(g);
+      if (first) startPlay();
+    }));
+    mp.unsubs.push(room.on('mp.shot', m => {
+      if (!S.mp || S.mp !== mp || m.isMe || !mp.G) return;
+      const G = mp.G, d = m.data;
+      if (!d || d.e !== G.e || d.n !== G.n + 1 || m.peer !== G.players[G.turn] || !Array.isArray(d.balls) || d.balls.length !== 16) return;
+      if (S.state === 'roll' || S.state === 'strike') return;
+      mpBallsApply(d.balls);
+      S.aim = +d.aim || 0; S.power = clamp(+d.power || 0.5, 0.03, 1); S.sa = clamp(+d.sa || 0, -0.8, 0.8); S.sb = clamp(+d.sb || 0, -0.8, 0.8);
+      S.state = 'aim'; S.breakPlace = false; S.over = false;
+      startShot(true);
+    }));
+    mp.unsubs.push(room.on('mp.req', m => {
+      if (!S.mp || S.mp !== mp || m.isMe || !mp.G) return;
+      if (mpOwner() && mp.state !== 'x') mpEmit('mp.state', mp.G);
+    }));
+    mp.unsubs.push(room.onPeers(ch => mpPeersChanged(ch)));
+    await room.presence({ nm: mpNameVal, t: Date.now() }).catch(() => { });
+    if (host) mpStatus('Väntar på att din vän går med. Be hen öppna spelet → Spela online → Gå med och skriva in koden.', code);
+    else { mpStatus('Ansluten till rum ' + code.toUpperCase() + '. Väntar på spelet…'); mpEmit('mp.req', { e: 0, n: 0 }); }
+  }
+  function mpLeave(silent) {
+    const mp = S.mp; if (!mp) return;
+    S.mp = null; S.oppGroup = null;
+    try { mp.unsubs.forEach(u => u()); } catch (_) { }
+    try { mp.room.leave().catch(() => { }); } catch (_) { }
+    S.mode = 'free'; S.group = null;
+    if (!silent) {
+      hideModal(); resetRack(true); mpStatus('');
+      if (S.menu) { showSub(null); $('h-leave').style.display = 'none'; $('h-modes').style.display = ''; $('h-new').style.display = S.started ? '' : 'none'; }
+      else openMenu();
+    }
+  }
+
+  /* ---------------- Startmeny & inställningar ---------------- */
+  S.menu = true; S.started = false; S.autoQ = true; S.quality = 'auto';
+  const dpr = window.devicePixelRatio || 1;
+  const QUALITY = {
+    auto: { ratio: Math.min(dpr, 1.25), shadows: true, map: 1024 },
+    low: { ratio: 1, shadows: false, map: 1024 },
+    med: { ratio: 1, shadows: true, map: 1024 },
+    high: { ratio: Math.min(dpr, 2), shadows: true, map: 2048 }
+  };
+  function applyQuality(q, save) {
+    const c = QUALITY[q]; if (!c) return;
+    S.quality = q; S.autoQ = (q === 'auto');
+    pixelRatio = c.ratio; renderer.setPixelRatio(pixelRatio); resize();
+    const was = renderer.shadowMap.enabled;
+    renderer.shadowMap.enabled = c.shadows; spots[1].castShadow = c.shadows;
+    if (c.shadows && spots[1].shadow.mapSize.x !== c.map) {
+      spots[1].shadow.mapSize.set(c.map, c.map);
+      if (spots[1].shadow.map) { spots[1].shadow.map.dispose(); spots[1].shadow.map = null; }
+    }
+    if (was !== c.shadows) scene.traverse(o => { if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => { m.needsUpdate = true; }); });
+    shadowForce = 3;
+    if (save) { try { localStorage.setItem('pool8.q', q); } catch (_) { } }
+    updateSettingsUI();
+  }
+  function updateSettingsUI() {
+    document.querySelectorAll('#qseg button').forEach(b => b.classList.toggle('on', b.dataset.q === S.quality));
+    $('h-snd').classList.toggle('on', S.sound); $('h-snd').textContent = 'Ljud: ' + (S.sound ? 'på' : 'av');
+    $('h-guide').classList.toggle('on', S.guide); $('h-guide').textContent = 'Siktlinje: ' + (S.guide ? 'på' : 'av');
+  }
+  function viewOffset() {
+    const w = window.innerWidth, h = window.innerHeight;
+    if (S.menu && w >= 720) camera.setViewOffset(w, h, -w * 0.16, 0, w, h); else camera.clearViewOffset();
+  }
+  function openMenu() {
+    if (S.menu) return;
+    if (S.state !== 'aim' && S.state !== 'place' && S.state !== 'watch') { toast('Vänta tills bollarna står still.', '', 1500); return; }
+    S.menu = true; document.body.classList.add('inmenu'); $('home').classList.remove('hide');
+    showSub(null); $('h-play').textContent = 'FORTSÄTT'; $('h-new').style.display = (S.started && !S.mp) ? '' : 'none';
+    $('h-leave').style.display = S.mp ? '' : 'none'; $('h-modes').style.display = S.mp ? 'none' : '';
+    viewOffset();
+  }
+  function startPlay() {
+    S.menu = false; S.started = true; ensureAudio();
+    document.body.classList.remove('inmenu'); $('home').classList.add('hide');
+    viewOffset(); updateHUD();
+    if (S.mode === 'free' && S.shots === 0 && S.state === 'place' && S.breakPlace) toast('Bryt racket! Placera vita bollen i det markerade området och tryck PLACERA HÄR.', '', 4500);
+  }
+  function showSub(id) {
+    $('hmain').style.display = id ? 'none' : '';
+    $('sub-how').classList.toggle('show', id === 'how');
+    $('sub-set').classList.toggle('show', id === 'set');
+    $('sub-cust').classList.toggle('show', id === 'cust');
+    $('sub-modes').classList.toggle('show', id === 'modes');
+    $('sub-mp').classList.toggle('show', id === 'mp');
+    if (id === 'modes') buildModeUI();
+    S.custom = (id === 'cust'); shadowForce = 3;
+  }
+  $('h-play').onclick = startPlay;
+  $('h-new').onclick = () => { if (!S.mp) { resetRack(true); startPlay(); } };
+  $('h-how').onclick = () => showSub('how');
+  $('h-cust').onclick = () => showSub('cust');
+  $('h-modes').onclick = () => showSub('modes');
+  $('h-mp').onclick = () => { $('mp-name').value = mpNameVal; showSub('mp'); };
+  $('h-leave').onclick = () => { mpLeave(false); };
+  $('mp-create').onclick = () => mpJoin(mpCode(), true);
+  $('mp-join').onclick = () => mpJoin($('mp-code').value, false);
+  $('mp-name').oninput = () => { mpNameVal = mpClean($('mp-name').value); try { localStorage.setItem('pool8.name', mpNameVal); } catch (_) { } if (S.mp) S.mp.room.presence({ nm: mpNameVal }).catch(() => { }); };
+  $('h-set').onclick = () => { updateSettingsUI(); showSub('set'); };
+  document.querySelectorAll('[data-back]').forEach(b => { b.onclick = () => showSub(null); });
+  document.querySelectorAll('#qseg button').forEach(b => { b.onclick = () => applyQuality(b.dataset.q, true); });
+  $('h-snd').onclick = toggleSound;
+  $('h-guide').onclick = toggleGuide;
+  $('btn-menu').onclick = openMenu;
+  window.addEventListener('resize', viewOffset);
+
+  /* ---------------- Anpassa bord & kö ---------------- */
+  const TABLES = [
+    { n: 'Klassisk', cloth: '#1c8350', wood: '#7a3e22' },
+    { n: 'Turnering', cloth: '#1f64b0', wood: '#4d3628' },
+    { n: 'Burgundy', cloth: '#9a2335', wood: '#2f2623' },
+    { n: 'Midnatt', cloth: '#343841', wood: '#9a7640' },
+    { n: 'Nordic', cloth: '#6f8290', wood: '#dccdac' },
+    { n: 'Argyle', cloth: '#2b6a8a', wood: '#2f2623', pattern: 'diamond' },
+    { n: 'Randig', cloth: '#a6262f', wood: '#4d3628', pattern: 'stripes' },
+    { n: 'Rutig', cloth: '#2f8a52', wood: '#7a3e22', pattern: 'check' },
+    { n: 'Eget', custom: true }
+  ];
+  const CUES = [
+    { n: 'Klassisk', butt: '#3a1f14', wrap: '#101010', gold: '#d8b04a', shaft: '#ecd5a8', met: 0, rough: 0.3 },
+    { n: 'Midnatt', butt: '#101216', wrap: '#1f3558', gold: '#4aa3ff', shaft: '#ecd5a8', met: 0.2, rough: 0.25 },
+    { n: 'Lönn', butt: '#d9b27c', wrap: '#5b3a22', gold: '#c9ccd1', shaft: '#f4e4c0', met: 0, rough: 0.35 },
+    { n: 'Karmosin', butt: '#8c1526', wrap: '#101010', gold: '#d8b04a', shaft: '#ecd5a8', met: 0.1, rough: 0.25 },
+    { n: 'Kol', butt: '#23272d', wrap: '#d8332a', gold: '#d8332a', shaft: '#c9cfd6', met: 0.6, rough: 0.28 },
+    { n: 'Neon', butt: '#14181d', wrap: '#14181d', gold: '#33ff99', shaft: '#e8e8e8', met: 0.5, rough: 0.25 },
+    { n: 'Elfenben', butt: '#efe6d2', wrap: '#2a2a2a', gold: '#b8892f', shaft: '#f6eedd', met: 0, rough: 0.3 },
+    { n: 'Violett', butt: '#4b2a7a', wrap: '#101010', gold: '#d8b04a', shaft: '#ecd5a8', met: 0.2, rough: 0.28 },
+    { n: 'Egen', custom: true, shaft: '#ecd5a8', met: 0.15, rough: 0.28 }
+  ];
+  const CUSTOM_T = TABLES.length - 1, CUSTOM_C = CUES.length - 1;
+  S.customT = { cloth: '#1c8350', wood: '#7a3e22' };
+  S.customC = { butt: '#3a1f14', wrap: '#101010', gold: '#d8b04a' };
+  try {
+    const a = JSON.parse(localStorage.getItem('pool8.ct') || 'null'); if (a && a.cloth && a.wood) S.customT = a;
+    const b = JSON.parse(localStorage.getItem('pool8.cc') || 'null'); if (b && b.butt && b.wrap && b.gold) S.customC = b;
+  } catch (_) { }
+  const lin = hex => new THREE.Color(hex).convertSRGBToLinear();
+
+  // mönstrade dukar (gråskala som färgas av dukfärgen)
+  function patternTex(kind) {
+    const c = makeCanvas(512, 512), g = c.getContext('2d');
+    g.drawImage(clothC, 0, 0);
+    if (kind === 'diamond') {
+      g.fillStyle = 'rgba(0,0,0,0.16)';
+      g.beginPath(); g.moveTo(256, 40); g.lineTo(472, 256); g.lineTo(256, 472); g.lineTo(40, 256); g.closePath(); g.fill();
+      g.strokeStyle = 'rgba(255,255,255,0.4)'; g.lineWidth = 7;
+      g.beginPath(); g.moveTo(0, 256); g.lineTo(256, 0); g.lineTo(512, 256); g.lineTo(256, 512); g.closePath(); g.stroke();
+      return texFrom(c, true, [13, 7]);
+    }
+    if (kind === 'stripes') {
+      g.fillStyle = 'rgba(0,0,0,0.2)';
+      for (let y = 0; y < 512; y += 256) g.fillRect(0, y, 512, 128);
+      return texFrom(c, true, [26, 6]);
+    }
+    g.fillStyle = 'rgba(0,0,0,0.17)'; g.fillRect(0, 0, 256, 256); g.fillRect(256, 256, 256, 256);
+    return texFrom(c, true, [13, 7]);
+  }
+  const PAT = { diamond: patternTex('diamond'), stripes: patternTex('stripes'), check: patternTex('check') };
+
+  function applyTable(i, save) {
+    const t = TABLES[i]; if (!t) return;
+    S.table = i;
+    const cloth = t.custom ? S.customT.cloth : t.cloth, wood = t.custom ? S.customT.wood : t.wood;
+    const map = (!t.custom && t.pattern) ? PAT[t.pattern] : clothTexA;
+    if (clothMat.map !== map) { clothMat.map = map; clothMat.needsUpdate = true; }
+    clothMat.color.copy(lin(cloth));
+    cushionMat.color.copy(lin(cloth)).multiplyScalar(0.88);
+    woodMat.color.copy(lin(wood));
+    woodDark.color.copy(lin(wood)).multiplyScalar(0.8);
+    if (save) { try { localStorage.setItem('pool8.table', String(i)); } catch (_) { } }
+    updateCustUI();
+  }
+  function applyCue(i, save) {
+    const c0 = CUES[i]; if (!c0 || !cueMats) return;
+    S.cueSkin = i;
+    const c = c0.custom ? Object.assign({}, c0, S.customC) : c0;
+    cueMats.butt.color.copy(lin(c.butt)); cueMats.butt.metalness = c.met; cueMats.butt.roughness = c.rough;
+    cueMats.wrap.color.copy(lin(c.wrap));
+    cueMats.gold.color.copy(lin(c.gold));
+    cueMats.shaft.color.copy(lin(c.shaft));
+    shadowForce = 3;
+    if (save) { try { localStorage.setItem('pool8.cue', String(i)); } catch (_) { } }
+    updateCustUI();
+  }
+  const RAINBOW = 'conic-gradient(#ff5a5a,#ffd24a,#5aff8a,#4aa3ff,#b45aff,#ff5a5a)';
+  function tableSwatch(t) {
+    if (t.custom) return 'background:' + RAINBOW + ';border-color:' + S.customT.wood;
+    let s = 'background-color:' + t.cloth + ';border-color:' + t.wood;
+    if (t.pattern === 'stripes') s += ';background-image:repeating-linear-gradient(0deg,rgba(0,0,0,.25) 0 6px,transparent 6px 12px)';
+    else if (t.pattern === 'check') s += ';background-image:repeating-conic-gradient(rgba(0,0,0,.25) 0 25%,transparent 0 50%);background-size:16px 16px';
+    else if (t.pattern === 'diamond') s += ';background-image:linear-gradient(45deg,rgba(255,255,255,.28) 25%,transparent 25% 75%,rgba(255,255,255,.28) 75%);background-size:14px 14px';
+    return s;
+  }
+  function cueSwatch(c) {
+    const k = c.custom ? Object.assign({}, c, S.customC) : c;
+    return 'background:linear-gradient(90deg,' + k.butt + ' 0 52%,' + k.wrap + ' 52% 70%,' + k.gold + ' 70% 75%,' + k.shaft + ' 75% 100%)';
+  }
+  function buildCustUI() {
+    const tw = $('sw-table'), cw = $('sw-cue'); tw.innerHTML = ''; cw.innerHTML = '';
+    TABLES.forEach((t, i) => {
+      const b = document.createElement('button'); b.className = 'swi'; b.title = t.n;
+      b.innerHTML = '<span class="sw tb" style="' + tableSwatch(t) + '"></span><span>' + t.n + '</span>';
+      b.onclick = () => applyTable(i, true); tw.appendChild(b);
+    });
+    CUES.forEach((c, i) => {
+      const b = document.createElement('button'); b.className = 'swi'; b.title = c.n;
+      b.innerHTML = '<span class="sw cu" style="' + cueSwatch(c) + '"></span><span>' + c.n + '</span>';
+      b.onclick = () => applyCue(i, true); cw.appendChild(b);
+    });
+  }
+  function updateCustUI() {
+    document.querySelectorAll('#sw-table .swi').forEach((b, i) => b.classList.toggle('on', i === S.table));
+    document.querySelectorAll('#sw-cue .swi').forEach((b, i) => b.classList.toggle('on', i === S.cueSkin));
+    $('ct-row').style.display = S.table === CUSTOM_T ? 'flex' : 'none';
+    $('cc-row').style.display = S.cueSkin === CUSTOM_C ? 'flex' : 'none';
+  }
+  function bindColor(id, obj, key, store, after) {
+    const el = $(id); el.value = obj[key];
+    el.oninput = () => { obj[key] = el.value; try { localStorage.setItem(store, JSON.stringify(obj)); } catch (_) { } after(); };
+  }
+  bindColor('ct-cloth', S.customT, 'cloth', 'pool8.ct', () => { applyTable(CUSTOM_T, true); buildCustUI(); updateCustUI(); });
+  bindColor('ct-wood', S.customT, 'wood', 'pool8.ct', () => { applyTable(CUSTOM_T, true); buildCustUI(); updateCustUI(); });
+  bindColor('cc-butt', S.customC, 'butt', 'pool8.cc', () => { applyCue(CUSTOM_C, true); buildCustUI(); updateCustUI(); });
+  bindColor('cc-wrap', S.customC, 'wrap', 'pool8.cc', () => { applyCue(CUSTOM_C, true); buildCustUI(); updateCustUI(); });
+  bindColor('cc-gold', S.customC, 'gold', 'pool8.cc', () => { applyCue(CUSTOM_C, true); buildCustUI(); updateCustUI(); });
+  buildCustUI();
+
+  // grafikkort eller programvarurendering?
+  let software = false;
+  try {
+    const gl = renderer.getContext(), ex = gl.getExtension('WEBGL_debug_renderer_info');
+    const nm = ex ? String(gl.getParameter(ex.UNMASKED_RENDERER_WEBGL)) : '';
+    software = /swiftshader|basic render|llvmpipe|softpipe|software/i.test(nm);
+  } catch (_) { }
+  let savedQ = null;
+  try { savedQ = localStorage.getItem('pool8.q'); const sn = localStorage.getItem('pool8.snd'); if (sn === '0') S.sound = false; } catch (_) { }
+  if (software) $('hwwarn').classList.add('show');
+  let savedT = 0, savedC = 0;
+  try { savedT = parseInt(localStorage.getItem('pool8.table') || '0', 10) || 0; savedC = parseInt(localStorage.getItem('pool8.cue') || '0', 10) || 0; } catch (_) { }
+  applyTable(TABLES[savedT] ? savedT : 0, false); applyCue(CUES[savedC] ? savedC : 0, false);
+  document.body.classList.add('inmenu');
+  viewOffset();
+
+  // start
+  S.balls = P.makeRack();
+  for (const b of S.balls) b.sink = null;
+  camera.position.set(-HX / 2 - 100, 60, 0); camera.lookAt(-HX / 2, 0, 0);
+  resetRack(true);
+  S.breakPlace = true;
+  applyQuality(software ? 'low' : (QUALITY[savedQ] ? savedQ : 'auto'), false);
+  updateSettingsUI();
+  updateCamera(100);
+  requestAnimationFrame(t => { last = t; loop(t); });
+})();
+
+</script>
+</body>
+</html>
