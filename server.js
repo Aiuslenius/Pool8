@@ -118,6 +118,16 @@ function api(req, res, p) {
         }
         return json(res, 200, { token: mkToken(u.name), name: u.name, data: u.data, upd: u.upd, eco: eco(u) });
       }
+      if (p === '/api/admin') {                       // bara för ägaren: kräver miljövariabeln ADMIN_KEY
+        const K = process.env.ADMIN_KEY || '';
+        if (limited(ip)) return json(res, 429, { err: 'rate' });
+        const a1 = Buffer.from(String(m.key || '')), b1 = Buffer.from(K);
+        if (!K || a1.length !== b1.length || !crypto.timingSafeEqual(a1, b1)) return json(res, 403, { err: 'forbidden' });
+        const t = users[String(m.name || '').toLowerCase()], n = parseInt(m.amount, 10);
+        if (!t || !Number.isFinite(n) || Math.abs(n) > 1e6) return json(res, 400, { err: 'bad' });
+        t.credits = Math.max(0, (t.credits | 0) + n); persist();
+        return json(res, 200, { ok: 1, name: t.name, credits: t.credits });
+      }
       const u = verToken(m.token);
       if (!u) return json(res, 401, { err: 'auth' });
       if (p === '/api/me') return json(res, 200, { name: u.name, data: u.data, upd: u.upd, eco: eco(u) });
