@@ -2,7 +2,7 @@
 // Serverar spelet och skickar vidare meddelanden mellan spelarna i samma rum (WebSocket).
 const http = require('http'), fs = require('fs'), path = require('path'), crypto = require('crypto');
 const PORT = process.env.PORT || 3000;
-const PUB = path.join(__dirname, 'public');
+const PUB = __dirname;
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.ico': 'image/x-icon' };
 
 const server = http.createServer((req, res) => {
