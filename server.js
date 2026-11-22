@@ -6,9 +6,97 @@ const PASSWORD = process.env.PASSWORD || '';   // valfritt: sätt PASSWORD för 
 const PUB = fs.existsSync(path.join(__dirname, 'public', 'index.html')) ? path.join(__dirname, 'public') : __dirname; // fungerar med index.html i public/ eller bredvid server.js
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.ico': 'image/x-icon' };
 
+
+/* ---- konton: användarnamn + lösenord, molnsparning ---- */
+const DATA = process.env.DATA_DIR || path.join(__dirname, 'data');
+try { fs.mkdirSync(DATA, { recursive: true }); } catch (_) { }
+const UF = path.join(DATA, 'users.json'), SF = path.join(DATA, 'secret');
+let users = {}; try { users = JSON.parse(fs.readFileSync(UF, 'utf8')); } catch (_) { }
+const SECRET = process.env.SECRET || (() => { try { return fs.readFileSync(SF, 'utf8'); } catch (_) { const s = crypto.randomBytes(32).toString('hex'); try { fs.writeFileSync(SF, s); } catch (_) { } return s; } })();
+let dirty = false;
+function persist() {
+  if (dirty) return; dirty = true;
+  setTimeout(() => { dirty = false; try { const t = UF + '.tmp'; fs.writeFileSync(t, JSON.stringify(users)); fs.renameSync(t, UF); } catch (e) { console.error('kunde inte spara konton:', e.message); } }, 1500);
+}
+const hmac = body => crypto.createHmac('sha256', SECRET).update(body).digest('base64url');
+function mkToken(name) { const body = Buffer.from(name).toString('base64url') + '.' + (Date.now() + 90 * 864e5); return body + '.' + hmac(body); }
+function verToken(t) {
+  if (typeof t !== 'string') return null; const p = t.split('.'); if (p.length !== 3) return null;
+  const a = Buffer.from(hmac(p[0] + '.' + p[1])), b = Buffer.from(p[2]);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b) || +p[1] < Date.now()) return null;
+  return users[Buffer.from(p[0], 'base64url').toString().toLowerCase()] || null;
+}
+const scrypt = (pw, salt) => new Promise((ok, no) => crypto.scrypt(pw, salt, 32, (e, k) => e ? no(e) : ok(k.toString('hex'))));
+const NAME_RE = /^[\p{L}\p{N}_-]{3,16}$/u, hits = new Map();
+function limited(ip) {
+  const now = Date.now(), h = hits.get(ip) || { n: 0, t: now };
+  if (now - h.t > 600000) { h.n = 0; h.t = now; }
+  h.n++; hits.set(ip, h); return h.n > 25;
+}
+setInterval(() => { const now = Date.now(); for (const [k, h] of hits) if (now - h.t > 600000) hits.delete(k); }, 600000);
+function clean(d) {
+  const o = {}; let n = 0;
+  if (!d || typeof d !== 'object') return o;
+  for (const k of Object.keys(d)) {
+    if (++n > 300) break;
+    if (k.length > 80 || !k.startsWith('pool8.') || k.startsWith('pool8.mt.') || k === 'pool8.acct') continue;
+    if (typeof d[k] === 'string' && d[k].length <= 30000) o[k] = d[k];
+  }
+  return o;
+}
+function readBody(req, cb) {
+  let n = 0; const ch = [];
+  req.on('data', d => { n += d.length; if (n > 600000) { req.destroy(); return; } ch.push(d); });
+  req.on('end', () => { try { cb(JSON.parse(Buffer.concat(ch).toString('utf8'))); } catch (_) { cb(null); } });
+}
+function json(res, code, o) { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(o)); }
+function board() {
+  const rows = Object.values(users).map(u => {
+    let stars = 0, st = {};
+    for (const k in u.data) if (k.startsWith('pool8.chal.')) stars += parseInt(u.data[k], 10) || 0;
+    try { st = JSON.parse(u.data['pool8.stats'] || '{}'); } catch (_) { }
+    return { name: u.name, stars, won: st.mpWon | 0, played: st.mpPlayed | 0 };
+  });
+  const top = (key) => rows.filter(r => r[key] > 0).sort((a, b) => b[key] - a[key] || a.name.localeCompare(b.name)).slice(0, 10);
+  return { stars: top('stars'), won: top('won') };
+}
+function api(req, res, p) {
+  const ip = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
+  if (req.method === 'GET') { if (p === '/api/ping') return json(res, 200, { ok: 1 }); if (p === '/api/board') return json(res, 200, board()); return json(res, 404, { err: 'nf' }); }
+  if (req.method !== 'POST') return json(res, 405, { err: 'method' });
+  readBody(req, async m => {
+    try {
+      if (!m || typeof m !== 'object') return json(res, 400, { err: 'bad' });
+      if (p === '/api/register' || p === '/api/login') {
+        if (limited(ip)) return json(res, 429, { err: 'rate' });
+        const name = String(m.name || '').trim(), pw = String(m.pw || '');
+        if (!NAME_RE.test(name)) return json(res, 400, { err: 'bad_name' });
+        if (pw.length < 6 || pw.length > 64) return json(res, 400, { err: 'bad_pw' });
+        const key = name.toLowerCase(); let u = users[key];
+        if (p === '/api/register') {
+          if (u) return json(res, 409, { err: 'taken' });
+          if (Object.keys(users).length >= 5000) return json(res, 503, { err: 'full' });
+          const salt = crypto.randomBytes(16).toString('hex');
+          u = users[key] = { name, salt, hash: await scrypt(pw, salt), created: Date.now(), data: {}, upd: 0 }; persist();
+        } else {
+          const h = u ? await scrypt(pw, u.salt) : null;
+          if (!u || h.length !== u.hash.length || !crypto.timingSafeEqual(Buffer.from(h), Buffer.from(u.hash))) return json(res, 401, { err: 'bad_login' });
+        }
+        return json(res, 200, { token: mkToken(u.name), name: u.name, data: u.data, upd: u.upd });
+      }
+      const u = verToken(m.token);
+      if (!u) return json(res, 401, { err: 'auth' });
+      if (p === '/api/me') return json(res, 200, { name: u.name, data: u.data, upd: u.upd });
+      if (p === '/api/save') { u.data = clean(m.data); u.upd = Date.now(); persist(); return json(res, 200, { ok: 1, upd: u.upd }); }
+      return json(res, 404, { err: 'nf' });
+    } catch (e) { console.error(e); json(res, 500, { err: 'server' }); }
+  });
+}
+
 const server = http.createServer((req, res) => {
   let p = decodeURIComponent((req.url || '/').split('?')[0]);
   if (p === '/' || p === '') p = '/index.html';
+  if (p.startsWith('/api/')) return api(req, res, p);
   if (p === '/health') { res.writeHead(200); return res.end('ok'); }
   if (p === '/auth') { const ok = !PASSWORD || new URL(req.url, 'http://x').searchParams.get('pw') === PASSWORD; res.writeHead(ok ? 200 : 401); return res.end(ok ? 'ok' : 'no'); }
   if (p !== '/index.html') { res.writeHead(404); return res.end('Not found'); }
