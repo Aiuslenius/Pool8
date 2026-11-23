@@ -100,6 +100,63 @@ function queueApi(m) {
   let n = 0; for (const [, o] of queue) if (!o.room) n++;
   return { state: 'wait', waiting: n };
 }
+/* ---- Stripe: köp av krediter (kräver STRIPE_SECRET_KEY + STRIPE_WEBHOOK_SECRET) ---- */
+const STRIPE_KEY = process.env.STRIPE_SECRET_KEY || '', STRIPE_WH = process.env.STRIPE_WEBHOOK_SECRET || '';
+const STRIPE_API = (process.env.STRIPE_API_BASE || 'https://api.stripe.com').replace(/\/$/, '');
+const CUR = (process.env.STRIPE_CURRENCY || 'sek').toLowerCase(), PUBLIC_URL = (process.env.PUBLIC_URL || '').replace(/\/$/, '');
+const PACKS = { p1: { credits: 1000, amount: 1900 }, p2: { credits: 3000, amount: 4900 }, p3: { credits: 6500, amount: 8900 }, p4: { credits: 15000, amount: 17900 } };   // amount i minsta valutaenhet (öre)
+const PAY_ON = !!(STRIPE_KEY && STRIPE_WH);
+function enc(o, pre, out) {
+  out = out || [];
+  for (const k of Object.keys(o)) { const key = pre ? pre + '[' + k + ']' : k, v = o[k]; if (v && typeof v === 'object') enc(v, key, out); else out.push(encodeURIComponent(key) + '=' + encodeURIComponent(String(v))); }
+  return out;
+}
+function stripePost(p, params) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(STRIPE_API + p), body = enc(params).join('&');
+    const r = (u.protocol === 'http:' ? http : require('https')).request(u, { method: 'POST', headers: { Authorization: 'Bearer ' + STRIPE_KEY, 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body) }, timeout: 15000 }, resp => {
+      const ch = []; resp.on('data', d => ch.push(d));
+      resp.on('end', () => { let j = null; try { j = JSON.parse(Buffer.concat(ch).toString('utf8')); } catch (_) { } if (resp.statusCode >= 200 && resp.statusCode < 300 && j) resolve(j); else reject(new Error('stripe ' + resp.statusCode + ' ' + ((j && j.error && j.error.message) || ''))); });
+    });
+    r.on('error', reject); r.on('timeout', () => r.destroy(new Error('stripe timeout'))); r.end(body);
+  });
+}
+const coHits = new Map();
+function coLimited(name) { const now = Date.now(), a = (coHits.get(name) || []).filter(t => now - t < 60000); a.push(now); coHits.set(name, a); return a.length > 8; }
+function readRaw(req, cb) {
+  let n = 0; const ch = [];
+  req.on('data', d => { n += d.length; if (n > 1000000) { req.destroy(); return; } ch.push(d); });
+  req.on('end', () => cb(Buffer.concat(ch).toString('utf8')));
+}
+function stripeEvent(ev) {
+  const o = (ev && ev.data && ev.data.object) || {}, md = o.metadata || {};
+  if (ev.type === 'checkout.session.completed' || ev.type === 'checkout.session.async_payment_succeeded') {
+    if (o.payment_status !== 'paid') return;
+    const u = users[String(md.user || '').toLowerCase()], pk = PACKS[md.pack];
+    if (!u || !pk || o.amount_total !== pk.amount || String(o.currency || '').toLowerCase() !== CUR) { console.error('stripe: orimlig betalning', o.id); return; }
+    u.paid = u.paid || {}; if (u.paid[o.id]) return;                       // redan krediterad (Stripe kan skicka samma händelse flera gånger)
+    u.credits = (u.credits | 0) + pk.credits; u.paid[o.id] = { t: Date.now(), pack: md.pack, credits: pk.credits, pi: o.payment_intent || '' }; persist();
+    console.log('stripe: +' + pk.credits + ' krediter till ' + u.name);
+  } else if ((ev.type === 'charge.refunded' && o.refunded === true) || ev.type === 'charge.dispute.created') {
+    const pi = o.payment_intent; if (!pi) return;
+    for (const u of Object.values(users)) for (const id in (u.paid || {})) {
+      const e = u.paid[id];
+      if (e.pi === pi && !e.refunded) { e.refunded = Date.now(); u.credits = Math.max(0, (u.credits | 0) - e.credits); persist(); console.log('stripe: återbetalning, -' + e.credits + ' krediter från ' + u.name); }
+    }
+  }
+}
+function stripeHook(req, res, raw) {
+  if (!PAY_ON) return json(res, 503, { err: 'nopay' });
+  let t = 0; const v1 = [];
+  for (const part of String(req.headers['stripe-signature'] || '').split(',')) { const i = part.indexOf('='); if (i < 0) continue; const k = part.slice(0, i), v = part.slice(i + 1); if (k === 't') t = parseInt(v, 10); else if (k === 'v1') v1.push(v); }
+  if (!t || Math.abs(Date.now() / 1000 - t) > 300) return json(res, 400, { err: 'sig' });
+  const exp = crypto.createHmac('sha256', STRIPE_WH).update(t + '.' + raw).digest('hex');
+  if (!v1.some(x => x.length === exp.length && crypto.timingSafeEqual(Buffer.from(x), Buffer.from(exp)))) return json(res, 400, { err: 'sig' });
+  let ev; try { ev = JSON.parse(raw); } catch (_) { return json(res, 400, { err: 'bad' }); }
+  try { stripeEvent(ev); } catch (e) { console.error(e); return json(res, 500, { err: 'server' }); }
+  json(res, 200, { received: true });
+}
+
 function readBody(req, cb) {
   let n = 0; const ch = [];
   req.on('data', d => { n += d.length; if (n > 600000) { req.destroy(); return; } ch.push(d); });
@@ -126,8 +183,9 @@ function board(me) {
 }
 function api(req, res, p) {
   const ip = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
-  if (req.method === 'GET') { if (p === '/api/ping') return json(res, 200, { ok: 1 }); if (p === '/api/board') return json(res, 200, board(new URL(req.url, 'http://x').searchParams.get('me'))); return json(res, 404, { err: 'nf' }); }
+  if (req.method === 'GET') { if (p === '/api/ping') return json(res, 200, { ok: 1, pay: PAY_ON, cur: CUR, packs: PAY_ON ? Object.keys(PACKS).map(id => ({ id, credits: PACKS[id].credits, amount: PACKS[id].amount })) : [] }); if (p === '/api/board') return json(res, 200, board(new URL(req.url, 'http://x').searchParams.get('me'))); return json(res, 404, { err: 'nf' }); }
   if (req.method !== 'POST') return json(res, 405, { err: 'method' });
+  if (p === '/api/stripe-webhook') return readRaw(req, raw => stripeHook(req, res, raw));
   readBody(req, async m => {
     try {
       if (!m || typeof m !== 'object') return json(res, 400, { err: 'bad' });
@@ -166,6 +224,18 @@ function api(req, res, p) {
       }
       const u = verToken(m.token);
       if (!u) return json(res, 401, { err: 'auth' });
+      if (p === '/api/checkout') {
+        if (!PAY_ON) return json(res, 503, { err: 'nopay' });
+        const id = String(m.pack || ''), pk = PACKS[id]; if (!pk) return json(res, 400, { err: 'bad_pack' });
+        if (coLimited(u.name.toLowerCase())) return json(res, 429, { err: 'rate' });
+        const host = String(req.headers.host || ''), proto = String(req.headers['x-forwarded-proto'] || '').split(',')[0] === 'https' ? 'https' : 'http';
+        const origin = PUBLIC_URL || (/^[a-zA-Z0-9.:-]{1,100}$/.test(host) ? proto + '://' + host : '');
+        if (!origin) return json(res, 400, { err: 'bad' });
+        try {
+          const ses = await stripePost('/v1/checkout/sessions', { mode: 'payment', success_url: origin + '/?paid=1', cancel_url: origin + '/?paid=0', client_reference_id: u.name, metadata: { user: u.name, pack: id }, line_items: { 0: { quantity: 1, price_data: { currency: CUR, unit_amount: pk.amount, product_data: { name: pk.credits + ' krediter – Poolers' } } } } });
+          return json(res, 200, { url: ses.url });
+        } catch (e) { console.error(e.message); return json(res, 502, { err: 'stripe' }); }
+      }
       if (p === '/api/me') return json(res, 200, { name: u.name, data: u.data, upd: u.upd, eco: eco(u) });
       if (p === '/api/result') { const ok = report(u, String(m.mid || ''), m.res); return json(res, 200, { ok: 1, credited: ok, eco: eco(u) }); }
       if (p === '/api/buy') {

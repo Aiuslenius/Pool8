@@ -18,6 +18,10 @@
     if (!A) return cb(false);
     post('/api/buy', { token: A.token, item: item }, function (st, j) { if (j && j.eco) setEco(j.eco, true); cb(st === 200); });
   };
+  window.__checkout = function (pack, cb) {
+    if (!A) return cb(null, 'auth');
+    post('/api/checkout', { token: A.token, pack: pack }, function (st, j) { if (st === 200 && j && j.url) cb(j.url); else cb(null, (j && j.err) || 'net'); });
+  };
   window.__mpResult = function (mid, won) {
     if (!A || !ECO.on) return;
     post('/api/result', { token: A.token, mid: mid, res: won ? 'w' : 'l' }, function (st, j) { if (j && j.eco) setEco(j.eco, true); });
@@ -91,7 +95,8 @@
   function ui() {
     var b = $('h-acct'); if (!b) return;
     var chip = $('h-credits'); if (chip) chip.style.display = A && ECO.on ? 'flex' : 'none';
-    b.style.display = 'flex'; b.textContent = A ? '👤 ' + A.name : '👤 ' + T('Logga in');
+    b.style.display = 'flex'; b.textContent = '';
+    if (A && window.__avImg) { b.appendChild(window.__avImg(window.__avMine())); b.appendChild(document.createTextNode(A.name)); } else b.textContent = A ? '👤 ' + A.name : '👤 ' + T('Logga in');
     $('acct-out').style.display = A ? 'none' : ''; $('acct-in').style.display = A ? '' : 'none';
     if (A) { $('ac-who').textContent = T('Inloggad som {0}', [A.name]); var st = $('ac-sync').dataset.st; if (st) sync(st); else $('ac-sync').textContent = T('Din data sparas automatiskt.'); }
   }
@@ -117,6 +122,7 @@
       d.className = 'brow' + (me ? ' me' : '');
       d.innerHTML = '<span class="rk"></span><span class="nm"></span><b class="vl"></b>';
       d.children[0].textContent = medal[i] || (i + 1) + '.'; d.children[1].textContent = r.name; d.children[2].textContent = fmt(r.v);
+      if (window.__avImg && r.av) { var im = window.__avImg(r.av, 'avt'); d.insertBefore(im, d.children[1]); }
       list.appendChild(d);
     });
     if (A && !meIn && cat.me) {
@@ -145,6 +151,7 @@
     var x = new XMLHttpRequest(); x.open('GET', '/api/ping');
     x.onload = function () {
       if (x.status !== 200) return;
+      var pj = jparse(x.responseText) || {}; ECO.pay = !!pj.pay; ECO.cur = pj.cur || 'sek'; ECO.packs = pj.packs || [];
       if (window.__quickShow) window.__quickShow();
       ECO.on = true; setEco(null, true); patch(); ui(); var hb = $('h-board'); if (hb) hb.style.display = '';
       $('ac-login').onclick = function () { login(false); }; $('ac-reg').onclick = function () { login(true); };
@@ -155,6 +162,11 @@
       window.__acctRefresh = function () { ui(); var e = $('ac-msg'); if (e && e.dataset.k) msg(e.dataset.k, null, !!e.dataset.bad); drawBoard(); };
       document.addEventListener('visibilitychange', function () { if (document.hidden) flush(); });
       window.addEventListener('pagehide', flush);
+      if (A && /[?&]paid=1\b/.test(location.search)) {          // tillbaka från Stripe: hämta saldot några gånger tills betalningen registrerats
+        try { history.replaceState(null, '', location.pathname); } catch (_) { }
+        if (window.__payThanks) window.__payThanks();
+        [1500, 4000, 8000, 15000, 30000].forEach(function (ms) { setTimeout(function () { post('/api/me', { token: A.token }, function (s2, j2) { if (s2 === 200 && j2 && j2.eco) setEco(j2.eco); }); }, ms); });
+      }
       if (A) post('/api/me', { token: A.token }, function (st, j) {
         if (st === 200 && j) { setEco(j.eco, true); rawSet.call(LS, 'pool8.name', A.name); if (window.__trophy) window.__trophy('acct'); applyCloud(j.data, true); }
         else if (st === 401) { setAcct(null); setEco(null, true); }
