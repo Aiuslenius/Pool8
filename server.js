@@ -72,6 +72,32 @@ function report(u, mid, res) {
   winner.day.n++; winner.lastWin = now; winner.credits = (winner.credits | 0) + WIN_CREDITS; persist();
   return true;
 }
+
+/* ---- slumpad matchning: spelare ställer sig i kö och paras ihop två och två ---- */
+const queue = new Map();
+setInterval(() => { const now = Date.now(); for (const [id, e] of queue) if (now - e.t > (e.room ? 60000 : 9000)) queue.delete(id); }, 3000);
+function queueApi(m) {
+  const id = String(m.id || ''); if (!/^[a-zA-Z0-9]{8,32}$/.test(id)) return { err: 'bad' };
+  const now = Date.now();
+  if (m.act === 'leave') { const e = queue.get(id); if (e && !e.room) queue.delete(id); return { ok: 1 }; }
+  let e = queue.get(id);
+  if (m.act === 'join') {
+    if (!e) { if (queue.size >= 1000) return { err: 'full' }; e = { t: now, room: null, host: false }; queue.set(id, e); }
+    e.t = now;
+    if (!e.room) {
+      let other = null;
+      for (const [oid, o] of queue) if (oid !== id && !o.room && now - o.t <= 9000 && (!other || o.t < other[1].t)) other = [oid, o];
+      if (other) {
+        const room = 'q' + crypto.randomBytes(4).toString('hex').slice(0, 6);
+        other[1].room = room; other[1].host = true; e.room = room; e.host = false;
+      }
+    }
+  } else if (!e) return { state: 'none' };
+  else e.t = now;
+  if (e.room) return { room: e.room, host: e.host };
+  let n = 0; for (const [, o] of queue) if (!o.room) n++;
+  return { state: 'wait', waiting: n };
+}
 function readBody(req, cb) {
   let n = 0; const ch = [];
   req.on('data', d => { n += d.length; if (n > 600000) { req.destroy(); return; } ch.push(d); });
@@ -119,6 +145,7 @@ function api(req, res, p) {
         }
         return json(res, 200, { token: mkToken(u.name), name: u.name, data: u.data, upd: u.upd, eco: eco(u) });
       }
+      if (p === '/api/queue') return json(res, 200, queueApi(m));
       if (p === '/api/admin') {                       // bara för ägaren: kräver miljövariabeln ADMIN_KEY
         const K = process.env.ADMIN_KEY || '';
         if (limited(ip)) return json(res, 429, { err: 'rate' });
