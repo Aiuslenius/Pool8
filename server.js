@@ -13,6 +13,9 @@ try { fs.mkdirSync(DATA, { recursive: true }); } catch (_) { }
 const UF = path.join(DATA, 'users.json'), SF = path.join(DATA, 'secret');
 let users = {}; try { users = JSON.parse(fs.readFileSync(UF, 'utf8')); } catch (_) { }
 const SECRET = process.env.SECRET || (() => { try { return fs.readFileSync(SF, 'utf8'); } catch (_) { const s = crypto.randomBytes(32).toString('hex'); try { fs.writeFileSync(SF, s); } catch (_) { } return s; } })();
+for (const u of Object.values(users)) if (u.held) {      // servern startades om mitt i en insatsmatch: lämna tillbaka spärrade insatser
+  const n = Object.values(u.held).reduce((a, b) => a + (b | 0), 0); if (n > 0) { u.credits = (u.credits | 0) + n; console.log('insats: återlämnade ' + n + ' krediter till ' + u.name + ' efter omstart'); } u.held = {};
+}
 let dirty = false;
 function persist() {
   if (dirty) return; dirty = true;
@@ -55,11 +58,84 @@ function price(item) {
   if (m[1] === 'T') return TABLE_IDS.includes(m[2]) ? (m[2] === 'classic' ? 0 : TABLE_500.includes(m[2]) ? 500 : 1000) : null;
   return CUE_IDS.includes(m[2]) ? (m[2] === 'classic' ? 0 : 5000) : null;
 }
-const eco = u => ({ credits: u.credits | 0, owned: Object.keys(u.owned || {}) });
+const eco = u => ({ credits: (u.credits | 0) + (u.bought | 0), earned: u.credits | 0, bought: u.bought | 0, owned: Object.keys(u.owned || {}) });
 const pend = new Map(), done = new Map();
 setInterval(() => { const now = Date.now(); for (const [k, v] of pend) if (now - v.t > 900000) pend.delete(k); for (const [k, t] of done) if (now - t > 86400000) done.delete(k); }, 300000);
+
+/* ---- insatser (wager): bara INTJÄNADE krediter (u.credits) kan satsas; köpta (u.bought) kan det aldrig ---- */
+const WAGER_MAX = 1000, WAGER_FEE = 0.05, WAGER_PAIR_DAY = 5, CLAIM_MS = +process.env.WAGER_CLAIM_MS || 150000, WINDOW_MS = +process.env.WAGER_WINDOW_MS || 45000;
+const wagers = new Map(), pairDay = new Map();
+const WKEY = /^[a-z0-9]{3,8}:\d{1,6}$/;
+setInterval(() => {
+  const now = Date.now(); if (pairDay.size > 20000) pairDay.clear();
+  for (const [k, W] of wagers) {
+    if (W.settled) { if (now - W.t > 600000) wagers.delete(k); continue; }
+    if (W.escrow) {
+      const c = Object.keys(W.claims);
+      if (c.length === 1 && W.claims[c[0]] === 'w' && now - W.c0 > CLAIM_MS) wagerPay(k, W, c[0]);              // motståndaren svarade aldrig
+      else if (now - W.t > 2700000) wagerRefund(k, W);                                                       // ingen rapporterade på 45 min
+    } else if (now - W.t > 900000) wagers.delete(k);
+  }
+}, +process.env.WAGER_SWEEP_MS || 10000);
+function wagerHold(k, W, undo) {
+  for (const n of W.users) { const u = users[n]; if (!u) continue; u.held = u.held || {}; if (undo) delete u.held[k]; else u.held[k] = W.amount; }
+}
+function wagerPay(k, W, winnerName) {
+  if (W.settled) return; W.settled = true; W.t = Date.now(); wagerHold(k, W, true);
+  const w = users[winnerName]; if (!w) { for (const n of W.users) if (users[n]) users[n].credits = (users[n].credits | 0) + W.amount; persist(); return; }
+  const pot = W.amount * 2, fee = Math.floor(pot * WAGER_FEE); w.credits = (w.credits | 0) + pot - fee; persist();
+  console.log('insats: ' + w.name + ' vann ' + (pot - fee) + ' krediter (' + k + ')');
+}
+function wagerRefund(k, W) {
+  if (W.settled) return; W.settled = true; W.t = Date.now(); wagerHold(k, W, true);
+  for (const n of W.users) if (users[n]) users[n].credits = (users[n].credits | 0) + W.amount; persist();
+}
+function wagerClaim(k, W, u, res) {
+  const me = u.name.toLowerCase(); if (!W.users.includes(me) || W.settled) return;
+  const other = W.users.find(n => n !== me);
+  if (res === 'l') return wagerPay(k, W, other);                                  // den som ger upp förlorar direkt
+  W.claims[me] = 'w'; if (!W.c0) W.c0 = Date.now();
+  if (W.claims[other] === 'l') return wagerPay(k, W, me);
+  if (W.claims[other] === 'w') wagerRefund(k, W);                                 // båda hävdar seger: återbetala
+}
+function wagerView(W, u) {
+  const me = u.name.toLowerCase(), opp = W.users.find(n => n !== me), o = W.offer;
+  return { amount: W.amount, left: Math.max(0, W.deadline - Date.now()), opp: opp ? (users[opp] || {}).name || '' : '', offer: o ? { mine: o.by === me, amount: o.amount } : null, max: WAGER_MAX, earned: u.credits | 0, fee: WAGER_FEE };
+}
+function wagerApi(u, m) {
+  const k = String(m.room || '') + ':' + (m.e | 0); if (!WKEY.test(k)) return { err: 'bad' };
+  const me = u.name.toLowerCase(), now = Date.now();
+  let W = wagers.get(k);
+  if (!W) { if (wagers.size > 5000) return { err: 'full' }; wagers.set(k, W = { t: now, users: [], offer: null, amount: null, escrow: false, claims: {}, settled: false, deadline: now + WINDOW_MS, c0: 0 }); }
+  if (!W.users.includes(me)) { if (W.users.length >= 2) return { err: 'room' }; W.users.push(me); }
+  if (W.amount === null && now > W.deadline) W.amount = 0;                         // ingen överenskommelse: vänskapsmatch
+  const act = String(m.act || 'poll');
+  if (W.amount === null) {
+    if (act === 'offer') {
+      const a = Math.floor(+m.amount); if (!Number.isFinite(a) || a < 0 || a > WAGER_MAX) return { err: 'bad' };
+      if (a > (u.credits | 0)) return { err: 'poor', view: wagerView(W, u) };
+      W.offer = { by: me, amount: a };
+    } else if (act === 'decline') W.offer = null;
+    else if (act === 'accept' && W.offer && W.offer.by !== me && W.users.length === 2) {
+      const a = W.offer.amount, other = W.users.find(n => n !== me), ou = users[other];
+      if (a > (u.credits | 0)) { return { err: 'poor', view: wagerView(W, u) }; }
+      if (!ou || a > (ou.credits | 0)) { W.offer = null; return { err: 'opp_poor', view: wagerView(W, u) }; }
+      if (a > 0) {
+        const day = new Date().toISOString().slice(0, 10), pk = W.users.slice().sort().join('|') + day, n = pairDay.get(pk) || 0;
+        if (n >= WAGER_PAIR_DAY) { W.offer = null; return { err: 'limit', view: wagerView(W, u) }; }
+        pairDay.set(pk, n + 1);
+        W.amount = a; W.escrow = true;
+        for (const n2 of W.users) users[n2].credits = (users[n2].credits | 0) - a;
+        wagerHold(k, W, false); persist();
+      } else W.amount = 0;
+      W.offer = null;
+    }
+  }
+  return { ok: 1, view: wagerView(W, u), eco: eco(u) };
+}
 // en vinst räknas först när både vinnaren (w) och förloraren (l), två olika konton, rapporterat samma match
 function report(u, mid, res) {
+  { const W = wagers.get(mid); if (W && W.escrow && !W.settled && (res === 'w' || res === 'l')) wagerClaim(mid, W, u, res); }
   if (!/^[a-zA-Z0-9_.:-]{1,64}$/.test(mid) || (res !== 'w' && res !== 'l') || done.has(mid)) return false;
   let p = pend.get(mid); if (!p) pend.set(mid, p = { t: Date.now(), w: null, l: null });
   p[res] = u.name.toLowerCase();
@@ -138,13 +214,13 @@ function stripeEvent(ev) {
     const u = users[String(md.user || '').toLowerCase()], pk = PACKS[md.pack];
     if (!u || !pk || o.amount_total !== pk.amount || String(o.currency || '').toLowerCase() !== CUR) { console.error('stripe: orimlig betalning', o.id); return; }
     u.paid = u.paid || {}; if (u.paid[o.id]) return;                       // redan krediterad (Stripe kan skicka samma händelse flera gånger)
-    u.credits = (u.credits | 0) + pk.credits; u.paid[o.id] = { t: Date.now(), pack: md.pack, credits: pk.credits, pi: o.payment_intent || '' }; persist();
+    u.bought = (u.bought | 0) + pk.credits; u.paid[o.id] = { t: Date.now(), pack: md.pack, credits: pk.credits, pi: o.payment_intent || '' }; persist();
     console.log('stripe: +' + pk.credits + ' krediter till ' + u.name);
   } else if ((ev.type === 'charge.refunded' && o.refunded === true) || ev.type === 'charge.dispute.created') {
     const pi = o.payment_intent; if (!pi) return;
     for (const u of Object.values(users)) for (const id in (u.paid || {})) {
       const e = u.paid[id];
-      if (e.pi === pi && !e.refunded) { e.refunded = Date.now(); u.credits = Math.max(0, (u.credits | 0) - e.credits); persist(); console.log('stripe: återbetalning, -' + e.credits + ' krediter från ' + u.name); }
+      if (e.pi === pi && !e.refunded) { e.refunded = Date.now(); u.bought = Math.max(0, (u.bought | 0) - e.credits); persist(); console.log('stripe: återbetalning, -' + e.credits + ' krediter från ' + u.name); }
     }
   }
 }
@@ -240,14 +316,17 @@ function api(req, res, p) {
         } catch (e) { console.error(e.message); return json(res, 502, { err: 'stripe' }); }
       }
       if (p === '/api/me') return json(res, 200, { name: u.name, data: u.data, upd: u.upd, eco: eco(u) });
+      if (p === '/api/wager') return json(res, 200, wagerApi(u, m));
       if (p === '/api/result') { const ok = report(u, String(m.mid || ''), m.res); return json(res, 200, { ok: 1, credited: ok, eco: eco(u) }); }
       if (p === '/api/buy') {
         const item = String(m.item || ''), pr = price(item);
         if (pr === null) return json(res, 400, { err: 'bad_item' });
         u.owned = u.owned || {};
         if (pr === 0 || u.owned[item]) return json(res, 200, { ok: 1, eco: eco(u) });
-        if ((u.credits | 0) < pr) return json(res, 402, { err: 'poor', need: pr - (u.credits | 0), eco: eco(u) });
-        u.credits -= pr; u.owned[item] = Date.now(); persist();
+        const have = (u.credits | 0) + (u.bought | 0);
+        if (have < pr) return json(res, 402, { err: 'poor', need: pr - have, eco: eco(u) });
+        const fromB = Math.min(u.bought | 0, pr); u.bought = (u.bought | 0) - fromB; u.credits = (u.credits | 0) - (pr - fromB);   // köpta krediter används först
+        u.owned[item] = Date.now(); persist();
         return json(res, 200, { ok: 1, eco: eco(u) });
       }
       if (p === '/api/save') { u.data = clean(m.data); u.upd = Date.now(); persist(); return json(res, 200, { ok: 1, upd: u.upd }); }

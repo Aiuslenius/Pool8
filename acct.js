@@ -8,7 +8,7 @@
   var ECO = window.__eco = { on: false, ready: !A, credits: 0, owned: {}, name: '' };
   function setEco(e, quiet) {
     var old = ECO.credits; ECO.ready = !A || !!e;
-    ECO.credits = e ? (e.credits | 0) : 0; ECO.owned = {}; ((e && e.owned) || []).forEach(function (k) { ECO.owned[k] = 1; });
+    ECO.credits = e ? (e.credits | 0) : 0; ECO.earned = e ? (e.earned | 0) : 0; ECO.bought = e ? (e.bought | 0) : 0; ECO.owned = {}; ((e && e.owned) || []).forEach(function (k) { ECO.owned[k] = 1; });
     ECO.name = A ? A.name : '';
     var chip = $('h-credits'); if (chip) { chip.style.display = A && ECO.on ? 'flex' : 'none'; chip.textContent = '🪙 ' + ECO.credits; }
     if (window.__ecoChanged) window.__ecoChanged();
@@ -22,10 +22,15 @@
     if (!A) return cb(null, 'auth');
     post('/api/checkout', { token: A.token, pack: pack }, function (st, j) { if (st === 200 && j && j.url) cb(j.url); else cb(null, (j && j.err) || 'net'); });
   };
+  window.__ecoPull = function () { if (!A) return; post('/api/me', { token: A.token }, function (st, j) { if (st === 200 && j && j.eco) setEco(j.eco); }); };
+  window.__wager = function (room, e, act, amount, cb) {
+    if (!A) return cb(0, null);
+    post('/api/wager', { token: A.token, room: room, e: e, act: act, amount: amount }, function (st, j) { if (j && j.eco) setEco(j.eco, true); cb(st, j); });
+  };
   window.__mpResult = function (mid, won) {
     if (!A || !ECO.on) return;
     post('/api/result', { token: A.token, mid: mid, res: won ? 'w' : 'l' }, function (st, j) { if (j && j.eco) setEco(j.eco, true); });
-    if (won) [3000, 9000].forEach(function (ms) { setTimeout(function () { post('/api/me', { token: A.token }, function (s2, j2) { if (s2 === 200 && j2 && j2.eco) setEco(j2.eco); }); }, ms); });
+    [3000, 9000].forEach(function (ms) { setTimeout(function () { post('/api/me', { token: A.token }, function (s2, j2) { if (s2 === 200 && j2 && j2.eco) setEco(j2.eco); }); }, ms); });
   };
   var $ = function (id) { return document.getElementById(id); };
   var T = function (s, a) { return window.__tr ? window.__tr(s, a) : s; };
