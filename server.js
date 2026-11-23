@@ -74,6 +74,8 @@ function report(u, mid, res) {
 }
 
 /* ---- slumpad matchning: spelare ställer sig i kö och paras ihop två och två ---- */
+const seen = new Map();     // id -> senaste hjärtslag (spelare online)
+function onlineCount() { const now = Date.now(); let n = 0; for (const [id, t] of seen) { if (now - t > 75000) seen.delete(id); else n++; } return n; }
 const queue = new Map();
 setInterval(() => { const now = Date.now(); for (const [id, e] of queue) if (now - e.t > (e.room ? 60000 : 9000)) queue.delete(id); }, 3000);
 function queueApi(m) {
@@ -147,6 +149,11 @@ function api(req, res, p) {
         return json(res, 200, { token: mkToken(u.name), name: u.name, data: u.data, upd: u.upd, eco: eco(u) });
       }
       if (p === '/api/queue') return json(res, 200, queueApi(m));
+      if (p === '/api/hb') {
+        const id = String(m.id || '');
+        if (/^[a-zA-Z0-9]{8,32}$/.test(id)) { if (m.bye) seen.delete(id); else if (seen.size < 20000 || seen.has(id)) seen.set(id, Date.now()); }
+        return json(res, 200, { online: onlineCount() });
+      }
       if (p === '/api/admin') {                       // bara för ägaren: kräver miljövariabeln ADMIN_KEY
         const K = process.env.ADMIN_KEY || '';
         if (limited(ip)) return json(res, 429, { err: 'rate' });
