@@ -10,7 +10,9 @@
     var old = ECO.credits; ECO.ready = !A || !!e;
     ECO.credits = e ? (e.credits | 0) : 0; ECO.earned = e ? (e.earned | 0) : 0; ECO.bought = e ? (e.bought | 0) : 0; ECO.owned = {}; ((e && e.owned) || []).forEach(function (k) { ECO.owned[k] = 1; });
     ECO.name = A ? A.name : '';
-    var chip = $('h-credits'); if (chip) { chip.style.display = A && ECO.on ? 'flex' : 'none'; chip.textContent = '🪙 ' + ECO.credits; }
+    var vis = A && ECO.on ? 'flex' : 'none';
+    var chip = $('h-credits'); if (chip) { chip.style.display = vis; chip.innerHTML = '<i class="ic coin"></i>'; chip.appendChild(document.createTextNode(String(ECO.earned))); chip.title = T('Intjänade krediter'); }
+    var chb = $('h-bought'); if (chb) { chb.style.display = vis; chb.innerHTML = '<i class="ic gem"></i>'; chb.appendChild(document.createTextNode(String(ECO.bought))); chb.title = T('Köpta krediter'); }
     if (window.__ecoChanged) window.__ecoChanged();
     if (!quiet && A && ECO.credits > old && window.__ecoToast) window.__ecoToast(ECO.credits - old);
   }
@@ -99,7 +101,7 @@
   }
   function ui() {
     var b = $('h-acct'); if (!b) return;
-    var chip = $('h-credits'); if (chip) chip.style.display = A && ECO.on ? 'flex' : 'none';
+    var chip = $('h-credits'); if (chip) chip.style.display = A && ECO.on ? 'flex' : 'none'; var chb2 = $('h-bought'); if (chb2) chb2.style.display = A && ECO.on ? 'flex' : 'none';
     b.style.display = 'flex'; b.textContent = '';
     if (A && window.__avImg) { b.appendChild(window.__avImg(window.__avMine())); b.appendChild(document.createTextNode(A.name)); } else b.textContent = A ? '👤 ' + A.name : '👤 ' + T('Logga in');
     $('acct-out').style.display = A ? 'none' : ''; $('acct-in').style.display = A ? '' : 'none';
