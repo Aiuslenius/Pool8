@@ -1,4 +1,4 @@
-// Noble Pool – egen server. Inga beroenden: kör bara `node server.js`.
+// Poolers – egen server. Inga beroenden: kör bara `node server.js`.
 // Serverar spelet och skickar vidare meddelanden mellan spelarna i samma rum (WebSocket).
 const http = require('http'), fs = require('fs'), path = require('path'), crypto = require('crypto');
 const PORT = process.env.PORT || 3000;
@@ -271,5 +271,5 @@ setInterval(() => { for (const c of clients) { if (!c.alive) { drop(c); continue
 server.listen(PORT, () => {
   const nets = require('os').networkInterfaces(), ips = [];
   for (const k in nets) for (const n of nets[k]) if (n.family === 'IPv4' && !n.internal) ips.push(n.address);
-  console.log('Noble Pool körs på:\n  http://localhost:' + PORT + (ips.length ? '\n' + ips.map(i => '  http://' + i + ':' + PORT + '  (samma wifi)').join('\n') : ''));
+  console.log('Poolers körs på:\n  http://localhost:' + PORT + (ips.length ? '\n' + ips.map(i => '  http://' + i + ':' + PORT + '  (samma wifi)').join('\n') : ''));
 });
