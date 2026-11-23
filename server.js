@@ -101,7 +101,8 @@ function queueApi(m) {
   return { state: 'wait', waiting: n };
 }
 /* ---- Stripe: köp av krediter (kräver STRIPE_SECRET_KEY + STRIPE_WEBHOOK_SECRET) ---- */
-const STRIPE_KEY = process.env.STRIPE_SECRET_KEY || '', STRIPE_WH = process.env.STRIPE_WEBHOOK_SECRET || '';
+const STRIPE_KEY = (process.env.STRIPE_SECRET_KEY || '').trim(), STRIPE_WH = (process.env.STRIPE_WEBHOOK_SECRET || '').trim();
+if (STRIPE_KEY && !/^(sk|rk)_(test|live)_/.test(STRIPE_KEY)) console.error('stripe: STRIPE_SECRET_KEY ser inte ut som en hemlig nyckel (ska börja med sk_test_ eller sk_live_)');
 const STRIPE_API = (process.env.STRIPE_API_BASE || 'https://api.stripe.com').replace(/\/$/, '');
 const CUR = (process.env.STRIPE_CURRENCY || 'sek').toLowerCase(), PUBLIC_URL = (process.env.PUBLIC_URL || '').replace(/\/$/, '');
 const PACKS = { p1: { credits: 1000, amount: 1900 }, p2: { credits: 3000, amount: 4900 }, p3: { credits: 6500, amount: 8900 }, p4: { credits: 15000, amount: 17900 } };   // amount i minsta valutaenhet (öre)
