@@ -111,13 +111,14 @@ function board(me) {
     try { st = JSON.parse(d['pool8.stats'] || '{}') || {}; } catch (_) { }
     try { tr = JSON.parse(d['pool8.trophies'] || '{}') || {}; } catch (_) { }
     const bi = k => { const v = parseInt(d[k], 10); return isNaN(v) ? 0 : v; };
-    return { name: u.name, trophies: Object.keys(tr).length, stars, won: st.mpWon | 0, streak: st.bestStreak | 0, pots: st.pots | 0, clear: bi('pool8.best.clear'), nine: bi('pool8.best.nine') };
+    const av = /^\d{1,2}(\.\d{1,2}){5}$/.test(d['pool8.av'] || '') ? d['pool8.av'] : '';
+    return { name: u.name, av, trophies: Object.keys(tr).length, stars, won: st.mpWon | 0, streak: st.bestStreak | 0, pots: st.pots | 0, clear: bi('pool8.best.clear'), nine: bi('pool8.best.nine') };
   });
   const LOW = { clear: 1, nine: 1 }, cats = {}, ml = String(me || '').toLowerCase();
   for (const key of ['trophies', 'stars', 'won', 'streak', 'clear', 'nine', 'pots']) {
     const list = rows.filter(r => r[key] > 0).sort((a, b) => (LOW[key] ? a[key] - b[key] : b[key] - a[key]) || a.name.localeCompare(b.name));
     const idx = ml ? list.findIndex(r => r.name.toLowerCase() === ml) : -1;
-    cats[key] = { top: list.slice(0, 10).map(r => ({ name: r.name, v: r[key] })), me: idx >= 0 ? { rank: idx + 1, v: list[idx][key] } : null, n: list.length };
+    cats[key] = { top: list.slice(0, 10).map(r => ({ name: r.name, av: r.av, v: r[key] })), me: idx >= 0 ? { rank: idx + 1, v: list[idx][key] } : null, n: list.length };
   }
   return { cats };
 }
