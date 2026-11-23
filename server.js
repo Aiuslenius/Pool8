@@ -102,11 +102,13 @@ function queueApi(m) {
 }
 /* ---- Stripe: köp av krediter (kräver STRIPE_SECRET_KEY + STRIPE_WEBHOOK_SECRET) ---- */
 const STRIPE_KEY = (process.env.STRIPE_SECRET_KEY || '').trim(), STRIPE_WH = (process.env.STRIPE_WEBHOOK_SECRET || '').trim();
-if (STRIPE_KEY && !/^(sk|rk)_(test|live)_/.test(STRIPE_KEY)) console.error('stripe: STRIPE_SECRET_KEY ser inte ut som en hemlig nyckel (ska börja med sk_test_ eller sk_live_)');
+if (STRIPE_KEY && !/^(sk|rk)_(test|live)_[A-Za-z0-9]{20,}$/.test(STRIPE_KEY)) console.error('stripe: STRIPE_SECRET_KEY är för kort eller felaktig (' + STRIPE_KEY.length + ' tecken). Hela nyckeln ska klistras in, den är över 100 tecken lång.');
+if (STRIPE_WH && !/^whsec_[A-Za-z0-9+\/=]{20,}$/.test(STRIPE_WH)) console.error('stripe: STRIPE_WEBHOOK_SECRET är för kort eller felaktig (' + STRIPE_WH.length + ' tecken).');
 const STRIPE_API = (process.env.STRIPE_API_BASE || 'https://api.stripe.com').replace(/\/$/, '');
 const CUR = (process.env.STRIPE_CURRENCY || 'sek').toLowerCase(), PUBLIC_URL = (process.env.PUBLIC_URL || '').replace(/\/$/, '');
 const PACKS = { p1: { credits: 1000, amount: 1900 }, p2: { credits: 3000, amount: 4900 }, p3: { credits: 6500, amount: 8900 }, p4: { credits: 15000, amount: 17900 } };   // amount i minsta valutaenhet (öre)
 const PAY_ON = !!(STRIPE_KEY && STRIPE_WH);
+const TAX_CODE = (process.env.STRIPE_TAX_CODE || '').trim();   // valfri: Stripes produktskattekod (txcd_…) om du använder Managed Payments
 function enc(o, pre, out) {
   out = out || [];
   for (const k of Object.keys(o)) { const key = pre ? pre + '[' + k + ']' : k, v = o[k]; if (v && typeof v === 'object') enc(v, key, out); else out.push(encodeURIComponent(key) + '=' + encodeURIComponent(String(v))); }
@@ -233,7 +235,7 @@ function api(req, res, p) {
         const origin = PUBLIC_URL || (/^[a-zA-Z0-9.:-]{1,100}$/.test(host) ? proto + '://' + host : '');
         if (!origin) return json(res, 400, { err: 'bad' });
         try {
-          const ses = await stripePost('/v1/checkout/sessions', { mode: 'payment', success_url: origin + '/?paid=1', cancel_url: origin + '/?paid=0', client_reference_id: u.name, metadata: { user: u.name, pack: id }, line_items: { 0: { quantity: 1, price_data: { currency: CUR, unit_amount: pk.amount, product_data: { name: pk.credits + ' krediter – Poolers' } } } } });
+          const ses = await stripePost('/v1/checkout/sessions', Object.assign({ mode: 'payment', success_url: origin + '/?paid=1', cancel_url: origin + '/?paid=0', client_reference_id: u.name, metadata: { user: u.name, pack: id }, line_items: { 0: { quantity: 1, price_data: { currency: CUR, unit_amount: pk.amount, product_data: Object.assign({ name: pk.credits + ' krediter – Poolers' }, TAX_CODE ? { tax_code: TAX_CODE } : {}) } } } }, TAX_CODE ? {} : { managed_payments: { enabled: 'false' } }));
           return json(res, 200, { url: ses.url });
         } catch (e) { console.error(e.message); return json(res, 502, { err: 'stripe' }); }
       }
